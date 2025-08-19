@@ -3,6 +3,7 @@ import subprocess
 import json
 import queue
 import threading
+import time
 from dataclasses import dataclass, asdict, field
 from typing import List, Optional
 from datetime import datetime
@@ -17,9 +18,10 @@ from tkinter import ttk
 
 def detect_default_unreal_cmd() -> str:
     candidates = [
-        r"C:\\Program Files\\Epic Games\\UE_5.6\\Engine\\Binaries\\Win64\\UnrealEditor-Cmd.exe",
-        r"C:\\Program Files\\Epic Games\\UE_5.5\\Engine\\Binaries\\Win64\\UnrealEditor-Cmd.exe",
-        r"C:\\Program Files\\Epic Games\\UE_5.4\\Engine\\Binaries\\Win64\\UnrealEditor-Cmd.exe",
+        # Используем прямые слэши, чтобы не было проблем с экранированием
+        "C:/Program Files/Epic Games/UE_5.6/Engine/Binaries/Win64/UnrealEditor-Cmd.exe",
+        "C:/Program Files/Epic Games/UE_5.5/Engine/Binaries/Win64/UnrealEditor-Cmd.exe",
+        "C:/Program Files/Epic Games/UE_5.4/Engine/Binaries/Win64/UnrealEditor-Cmd.exe",
     ]
     for c in candidates:
         if os.path.exists(c):
@@ -44,8 +46,8 @@ def fs_to_soft_object(uasset_path: str) -> str:
     rel_dir = rel_parts[:-1]
     game_path = "/Game"
     if rel_dir:
-        # важное экранирование обратной косой черты
-        game_path += "/" + "/".join(rel_dir).replace("\\", "/")
+        # избегаем обратных слешей
+        game_path += "/" + "/".join(rel_dir).replace("\", "/")
     return f"{game_path}/{asset_name}.{asset_name}"
 
 
@@ -66,9 +68,6 @@ class RenderTask:
     preset: str = ""
     notes: str = ""
     enabled: bool = True
-
-    def row_tuple(self):
-        return ("✔" if self.enabled else " ", soft_name(self.level), soft_name(self.sequence), soft_name(self.preset), self.notes)
 
 
 @dataclass
@@ -167,20 +166,23 @@ class TaskEditor(tk.Toplevel):
         self.destroy()
 
 # -------------------------------------------------
-# Main App (потокобезопасный лог, не зависает UI)
+# Main App (потокобезопасный лог + статус задач)
 # -------------------------------------------------
 
 class MRQLauncher(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("MRQ Launcher (CLI)")
-        self.geometry("1260x820")
+        self.geometry("1320x840")
         self.settings = AppSettings()
         self.current_process: Optional[subprocess.Popen] = None
+        self._current_global_idx: Optional[int] = None
         self.stop_all = False
         self.log_queue: "queue.Queue[str]" = queue.Queue()
+        self.ui_queue: "queue.Queue[tuple]" = queue.Queue()
+        self.state: List[dict] = []  # per-task session state: {status, progress, start, end}
         self._build_ui()
-        self.after(50, self._drain_log_queue)
+        self.after(50, self._drain_queues)
 
     # UI
     def _build_ui(self):
@@ -204,14 +206,15 @@ class MRQLauncher(tk.Tk):
         mid = tk.Frame(self, padx=10, pady=8)
         mid.pack(fill=tk.BOTH, expand=True)
 
-        cols = ("enabled", "level", "sequence", "preset", "notes")
+        cols = ("enabled", "level", "sequence", "preset", "status", "notes")
         self.tree = ttk.Treeview(mid, columns=cols, show="headings", selectmode="extended")
         for name, title, width in (
             ("enabled", "✔", 40),
-            ("level", "Level", 240),
-            ("sequence", "Sequence", 240),
-            ("preset", "Preset", 320),
-            ("notes", "Notes", 280),
+            ("level", "Level", 220),
+            ("sequence", "Sequence", 220),
+            ("preset", "Preset", 300),
+            ("status", "Status", 220),
+            ("notes", "Notes", 260),
         ):
             self.tree.heading(name, text=title)
             self.tree.column(name, width=width, anchor="center" if name=="enabled" else "w")
@@ -282,11 +285,28 @@ class MRQLauncher(tk.Tk):
 
         self.refresh_tree()
 
+    # ---- Runtime state helpers ----
+    def _ensure_state(self):
+        while len(self.state) < len(self.settings.tasks):
+            self.state.append({"status": "—", "progress": None, "start": None, "end": None})
+
+    def _row_values(self, i: int):
+        t = self.settings.tasks[i]
+        st = self.state[i]["status"] if i < len(self.state) else "—"
+        return ("✔" if t.enabled else " ", soft_name(t.level), soft_name(t.sequence), soft_name(t.preset), st, t.notes)
+
+    def _set_status_async(self, idx: int, text: str):
+        self.ui_queue.put(("set_status", idx, text))
+
+    def _update_row_async(self, idx: int):
+        self.ui_queue.put(("update_row", idx))
+
     # Tree helpers
     def refresh_tree(self):
+        self._ensure_state()
         self.tree.delete(*self.tree.get_children())
-        for i, t in enumerate(self.settings.tasks):
-            self.tree.insert("", "end", iid=str(i), values=t.row_tuple())
+        for i, _ in enumerate(self.settings.tasks):
+            self.tree.insert("", "end", iid=str(i), values=self._row_values(i))
 
     def _selected_indices(self) -> List[int]:
         return [int(iid) for iid in self.tree.selection()]
@@ -308,11 +328,13 @@ class MRQLauncher(tk.Tk):
         if not sel:
             return
         tasks = self.settings.tasks
+        state = self.state
         if delta < 0:
             sel_sorted = sorted(sel)
             for i, idx in enumerate(sel_sorted):
                 if idx > 0 and (idx - 1) not in sel_sorted:
                     tasks[idx - 1], tasks[idx] = tasks[idx], tasks[idx - 1]
+                    state[idx - 1], state[idx] = state[idx], state[idx - 1]
                     sel_sorted[i] = idx - 1
             new_sel = sel_sorted
         else:
@@ -320,10 +342,10 @@ class MRQLauncher(tk.Tk):
             for i, idx in enumerate(sel_sorted):
                 if idx < len(tasks) - 1 and (idx + 1) not in sel_sorted:
                     tasks[idx + 1], tasks[idx] = tasks[idx], tasks[idx + 1]
+                    state[idx + 1], state[idx] = state[idx], state[idx + 1]
                     sel_sorted[i] = idx + 1
             new_sel = sel_sorted
         self.refresh_tree()
-        # восстановить выделение
         self.tree.selection_set([str(i) for i in sorted(new_sel)])
         self.tree.see(str(sorted(new_sel)[0]))
 
@@ -354,12 +376,14 @@ class MRQLauncher(tk.Tk):
         for idx in sel:
             src = self.settings.tasks[idx]
             self.settings.tasks.insert(idx + 1, RenderTask(**asdict(src)))
+            self.state.insert(idx + 1, {"status": "—", "progress": None, "start": None, "end": None})
         self.refresh_tree()
 
     def remove_task(self):
         sel = sorted(self._selected_indices(), reverse=True)
         for idx in sel:
             del self.settings.tasks[idx]
+            del self.state[idx]
         self.refresh_tree()
 
     def set_enabled_all(self, val: bool):
@@ -387,6 +411,7 @@ class MRQLauncher(tk.Tk):
         self.var_policy.set(self.settings.fail_policy)
         self.var_kill_timeout.set(self.settings.kill_timeout_s)
         self.settings.tasks = [RenderTask(**{**it, **({"enabled": True} if "enabled" not in it else {})}) for it in data.get("tasks", [])]
+        self.state = [{"status": "—", "progress": None, "start": None, "end": None} for _ in self.settings.tasks]
         self.refresh_tree()
 
     def save_to_json(self, path: str):
@@ -420,14 +445,15 @@ class MRQLauncher(tk.Tk):
             try:
                 with open(p, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                # поддерживаем как одиночный таск, так и файл очереди с ключом tasks
                 if isinstance(data, dict) and all(k in data for k in ("uproject","level","sequence","preset")):
                     self.settings.tasks.append(RenderTask(**{**data, **({"enabled": True} if "enabled" not in data else {})}))
+                    self.state.append({"status": "—", "progress": None, "start": None, "end": None})
                     loaded += 1
                 elif isinstance(data, dict) and "tasks" in data:
                     for it in data.get("tasks", []):
                         if all(k in it for k in ("uproject","level","sequence","preset")):
                             self.settings.tasks.append(RenderTask(**{**it, **({"enabled": True} if "enabled" not in it else {})}))
+                            self.state.append({"status": "—", "progress": None, "start": None, "end": None})
                             loaded += 1
             except Exception as e:
                 messagebox.showerror("Load Task", f"{os.path.basename(p)}: {e}")
@@ -460,12 +486,52 @@ class MRQLauncher(tk.Tk):
                 p = os.path.join(folder, name)
                 self._save_task_to_file(t, p)
                 count += 1
-            messagebox.showinfo("Save Task(s)", f"Saved {count} task file(s) to\n{folder}")
+            messagebox.showinfo("Save Task(s)", f"Saved {count} task file(s) to
+{folder}")
 
     def _save_task_to_file(self, t: RenderTask, path: str):
         data = asdict(t)
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
+
+    # ---- Progress parsing (без regex) ----
+    def _extract_progress(self, line: str) -> Optional[int]:
+        # Пытаемся найти число перед знаком %
+        if "%" in line:
+            i = line.find("%")
+            j = i - 1
+            while j >= 0 and line[j].isdigit():
+                j -= 1
+            digits = line[j+1:i]
+            if digits.isdigit():
+                v = int(digits)
+                if 0 <= v <= 100:
+                    return v
+        # Пытаемся найти токен вида X/Y
+        tokens = line.replace("(", " ").replace(")", " ").replace("[", " ").replace("]", " ").split()
+        for tok in tokens:
+            if "/" in tok:
+                parts = tok.split("/")
+                if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
+                    a, b = int(parts[0]), int(parts[1])
+                    if b > 0:
+                        return max(0, min(100, int(a * 100 / b)))
+        # progress: NN или progress=NN
+        low = line.lower()
+        for sep in (":", "="):
+            key = "progress" + sep
+            if key in low:
+                tail = low.split(key, 1)[1].strip()
+                num = ""
+                for ch in tail:
+                    if ch.isdigit():
+                        num += ch
+                    else:
+                        break
+                if num:
+                    v = int(num)
+                    return max(0, min(100, v))
+        return None
 
     # Run
     def _collect(self, only_enabled=False, only_selected=False) -> List[RenderTask]:
@@ -508,6 +574,14 @@ class MRQLauncher(tk.Tk):
         policy = self.var_policy.get()
         kill_timeout = int(self.var_kill_timeout.get())
 
+        # пометить задачи как Queued
+        for t in tasks:
+            try:
+                gi = self.settings.tasks.index(t)
+                self._set_status_async(gi, "Queued")
+            except ValueError:
+                pass
+
         def worker(queue_tasks: List[RenderTask]):
             for idx, t in enumerate(queue_tasks, 1):
                 if self.stop_all:
@@ -518,14 +592,28 @@ class MRQLauncher(tk.Tk):
 
                 attempt = 0
                 logfile = self._task_logfile(t)
+                gi = None
+                try:
+                    gi = self.settings.tasks.index(t)
+                except ValueError:
+                    gi = None
+
                 while attempt <= retries and not self.stop_all:
                     attempt += 1
                     cmd = [ue_cmd, t.uproject, t.level.split(".")[0], "-game",
                            f"-LevelSequence=\"{t.sequence}\"", f"-MoviePipelineConfig=\"{t.preset}\"", "-log", "-notexturestreaming"]
                     self._log(f"[{idx}] Start (try {attempt}/{retries+1}): {' '.join(cmd)}")
+
+                    # статус
+                    if gi is not None:
+                        self.state[gi]["start"] = time.time()
+                        self._set_status_async(gi, "Running 0%")
+                        self._current_global_idx = gi
+
                     try:
                         log_fp = open(logfile, "a", encoding="utf-8")
-                        log_fp.write(f"CMD: {' '.join(cmd)}\n")
+                        log_fp.write(f"CMD: {' '.join(cmd)}
+")
                         self.current_process = subprocess.Popen(
                             cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
                         )
@@ -533,7 +621,7 @@ class MRQLauncher(tk.Tk):
                         self._log(f"[{idx}] Failed to start: {e}")
                         break
 
-                    def pump(proc: subprocess.Popen):
+                    def pump(proc: subprocess.Popen, gidx: Optional[int]):
                         try:
                             if proc.stdout:
                                 for line in proc.stdout:
@@ -541,6 +629,11 @@ class MRQLauncher(tk.Tk):
                                         break
                                     self._log(line.rstrip())
                                     log_fp.write(line)
+                                    # попытка вытащить прогресс
+                                    p = self._extract_progress(line)
+                                    if p is not None and gidx is not None:
+                                        self.state[gidx]["progress"] = p
+                                        self._set_status_async(gidx, f"Running {p}%")
                         except Exception as ex:
                             self._log(f"[pump] {ex}")
                         finally:
@@ -549,27 +642,45 @@ class MRQLauncher(tk.Tk):
                             except Exception:
                                 pass
 
-                    th = threading.Thread(target=pump, args=(self.current_process,), daemon=True)
+                    th = threading.Thread(target=pump, args=(self.current_process, gi), daemon=True)
                     th.start()
                     rc = self.current_process.wait()
                     self._log(f"[{idx}] Exit code: {rc}")
                     self.current_process = None
                     try:
-                        log_fp.write(f"\nEXIT: {rc}\n")
+                        log_fp.write(f"
+EXIT: {rc}
+")
                         log_fp.close()
                     except Exception:
                         pass
 
+                    if gi is not None:
+                        self.state[gi]["end"] = time.time()
+                        dur = None
+                        if self.state[gi]["start"]:
+                            dur = int(self.state[gi]["end"] - self.state[gi]["start"])  # seconds
+
                     if rc == 0:
+                        if gi is not None:
+                            if dur is not None:
+                                m, s = divmod(dur, 60)
+                                self._set_status_async(gi, f"Done ({m:02d}:{s:02d})")
+                            else:
+                                self._set_status_async(gi, "Done")
                         break
                     else:
                         if policy == "stop_queue":
+                            if gi is not None:
+                                self._set_status_async(gi, f"Failed (rc={rc})")
                             self._log(f"[{idx}] Fail → stop queue by policy")
                             self.stop_all = True
                             break
                         if attempt <= retries:
                             self._log(f"[{idx}] Will retry…")
                         else:
+                            if gi is not None:
+                                self._set_status_async(gi, f"Failed (rc={rc})")
                             self._log(f"[{idx}] Failed after {retries+1} attempt(s)")
                         if policy == "skip_next":
                             break
@@ -579,6 +690,7 @@ class MRQLauncher(tk.Tk):
                     break
 
             self._log("== Queue complete ==")
+            self._current_global_idx = None
 
         threading.Thread(target=worker, args=(tasks[:],), daemon=True).start()
 
@@ -587,6 +699,8 @@ class MRQLauncher(tk.Tk):
             try:
                 self.current_process.terminate()
                 self._log("[Cancel] Sent terminate to current task…")
+                if self._current_global_idx is not None:
+                    self._set_status_async(self._current_global_idx, "Cancelled")
                 timeout = int(self.var_kill_timeout.get())
                 if timeout > 0:
                     try:
@@ -604,19 +718,40 @@ class MRQLauncher(tk.Tk):
         self.cancel_current()
         self._log("[Cancel] Stop-all requested.")
 
-    # Logging (потокобезопасно)
+    # Logging & UI queues (потокобезопасно)
     def _log(self, msg: str):
         self.log_queue.put(msg)
 
-    def _drain_log_queue(self):
+    def _drain_queues(self):
         try:
             while True:
                 msg = self.log_queue.get_nowait()
-                self.log.insert("end", msg + "\n")
+                self.log.insert("end", msg + "
+")
                 self.log.see("end")
         except queue.Empty:
             pass
-        self.after(50, self._drain_log_queue)
+
+        try:
+            while True:
+                item = self.ui_queue.get_nowait()
+                if not item:
+                    break
+                kind = item[0]
+                if kind == "set_status":
+                    _, idx, text = item
+                    if 0 <= idx < len(self.state):
+                        self.state[idx]["status"] = text
+                        if self.tree.exists(str(idx)):
+                            self.tree.item(str(idx), values=self._row_values(idx))
+                elif kind == "update_row":
+                    _, idx = item
+                    if self.tree.exists(str(idx)):
+                        self.tree.item(str(idx), values=self._row_values(idx))
+        except queue.Empty:
+            pass
+
+        self.after(50, self._drain_queues)
 
     def browse_ue(self):
         p = filedialog.askopenfilename(title="Select UnrealEditor-Cmd.exe",
