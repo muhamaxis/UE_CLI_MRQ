@@ -18,7 +18,7 @@ from tkinter import ttk
 
 def detect_default_unreal_cmd() -> str:
     candidates = [
-        # Используем прямые слэши, чтобы не было проблем с экранированием
+        # Прямые слэши, чтобы не было проблем с экранированием в Python-строках
         "C:/Program Files/Epic Games/UE_5.6/Engine/Binaries/Win64/UnrealEditor-Cmd.exe",
         "C:/Program Files/Epic Games/UE_5.5/Engine/Binaries/Win64/UnrealEditor-Cmd.exe",
         "C:/Program Files/Epic Games/UE_5.4/Engine/Binaries/Win64/UnrealEditor-Cmd.exe",
@@ -46,8 +46,8 @@ def fs_to_soft_object(uasset_path: str) -> str:
     rel_dir = rel_parts[:-1]
     game_path = "/Game"
     if rel_dir:
-        # избегаем обратных слешей
-        game_path += "/" + "/".join(rel_dir).replace("\", "/")
+        # формируем путь сразу через прямой слэш
+        game_path += "/" + "/".join(rel_dir)
     return f"{game_path}/{asset_name}.{asset_name}"
 
 
@@ -166,7 +166,7 @@ class TaskEditor(tk.Toplevel):
         self.destroy()
 
 # -------------------------------------------------
-# Main App (потокобезопасный лог + статус задач)
+# Main App (потокобезопасный лог + статусы)
 # -------------------------------------------------
 
 class MRQLauncher(tk.Tk):
@@ -180,7 +180,7 @@ class MRQLauncher(tk.Tk):
         self.stop_all = False
         self.log_queue: "queue.Queue[str]" = queue.Queue()
         self.ui_queue: "queue.Queue[tuple]" = queue.Queue()
-        self.state: List[dict] = []  # per-task session state: {status, progress, start, end}
+        self.state: List[dict] = []  # {status, progress, start, end}
         self._build_ui()
         self.after(50, self._drain_queues)
 
@@ -486,8 +486,7 @@ class MRQLauncher(tk.Tk):
                 p = os.path.join(folder, name)
                 self._save_task_to_file(t, p)
                 count += 1
-            messagebox.showinfo("Save Task(s)", f"Saved {count} task file(s) to
-{folder}")
+            messagebox.showinfo("Save Task(s)", f"Saved {count} task file(s) to\n{folder}")
 
     def _save_task_to_file(self, t: RenderTask, path: str):
         data = asdict(t)
@@ -612,8 +611,7 @@ class MRQLauncher(tk.Tk):
 
                     try:
                         log_fp = open(logfile, "a", encoding="utf-8")
-                        log_fp.write(f"CMD: {' '.join(cmd)}
-")
+                        log_fp.write(f"CMD: {' '.join(cmd)}\n")
                         self.current_process = subprocess.Popen(
                             cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
                         )
@@ -648,9 +646,7 @@ class MRQLauncher(tk.Tk):
                     self._log(f"[{idx}] Exit code: {rc}")
                     self.current_process = None
                     try:
-                        log_fp.write(f"
-EXIT: {rc}
-")
+                        log_fp.write(f"\nEXIT: {rc}\n")
                         log_fp.close()
                     except Exception:
                         pass
@@ -726,8 +722,7 @@ EXIT: {rc}
         try:
             while True:
                 msg = self.log_queue.get_nowait()
-                self.log.insert("end", msg + "
-")
+                self.log.insert("end", msg + "\n")
                 self.log.see("end")
         except queue.Empty:
             pass
