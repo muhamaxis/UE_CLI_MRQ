@@ -205,22 +205,23 @@ class MRQLauncher(tk.Tk):
 
     # UI
     def _build_ui(self):
-        # ---- Menu Bar (replaces right-side buttons) ----
+        # ---- Menu Bar ----
         menubar = tk.Menu(self)
-        # Task
+        # Task (only add/edit/duplicate here)
         m_task = tk.Menu(menubar, tearoff=0)
         m_task.add_command(label="Add Task", command=self.add_task)
         m_task.add_command(label="Edit Task", command=self.edit_task)
         m_task.add_command(label="Duplicate Task", command=self.duplicate_task)
-        m_task.add_separator()
-        m_task.add_command(label="Move Up", command=lambda: self.move_selected(-1))
-        m_task.add_command(label="Move Down", command=lambda: self.move_selected(1))
         menubar.add_cascade(label="Task", menu=m_task)
-        # Selections
+        # Selections (moved Move Up/Down here + Remove Task(s))
         m_sel = tk.Menu(menubar, tearoff=0)
         m_sel.add_command(label="Enable All Tasks", command=lambda: self.set_enabled_all(True))
         m_sel.add_command(label="Disable All Tasks", command=lambda: self.set_enabled_all(False))
+        m_sel.add_command(label="Remove Task(s)", command=self.remove_task)
         m_sel.add_command(label="Toggle Selection", command=self.toggle_selected)
+        m_sel.add_separator()
+        m_sel.add_command(label="Move Up", command=lambda: self.move_selected(-1))
+        m_sel.add_command(label="Move Down", command=lambda: self.move_selected(1))
         menubar.add_cascade(label="Selections", menu=m_sel)
         # Render
         m_run = tk.Menu(menubar, tearoff=0)
@@ -274,28 +275,13 @@ class MRQLauncher(tk.Tk):
         self.var_extra = StringVar(value=self.settings.extra_cli)
         tk.Entry(opts, textvariable=self.var_extra, width=60).pack(side=tk.LEFT, padx=(0,6), fill=tk.X, expand=True)
 
-        # ---- Toolbar: quick Selections & Render buttons (kept in Menu as well) ----
-        toolbar = tk.Frame(self, padx=10, pady=2)
-        toolbar.pack(fill=tk.X)
-        # Selections group
-        tb_sel = tk.LabelFrame(toolbar, text="Selections")
-        tb_sel.pack(side=tk.LEFT, padx=(0,10))
-        tk.Button(tb_sel, text="Enable All Tasks", command=lambda: self.set_enabled_all(True)).pack(side=tk.LEFT, padx=4, pady=2)
-        tk.Button(tb_sel, text="Disable All Tasks", command=lambda: self.set_enabled_all(False)).pack(side=tk.LEFT, padx=4, pady=2)
-        tk.Button(tb_sel, text="Toggle Selection", command=self.toggle_selected).pack(side=tk.LEFT, padx=4, pady=2)
-        # Render group
-        tb_run = tk.LabelFrame(toolbar, text="Render")
-        tb_run.pack(side=tk.LEFT, padx=(0,10))
-        tk.Button(tb_run, text="Render Selected", command=self.run_selected).pack(side=tk.LEFT, padx=4, pady=2)
-        tk.Button(tb_run, text="Render Checked", command=self.run_enabled).pack(side=tk.LEFT, padx=4, pady=2)
-        tk.Button(tb_run, text="Cancel Current", command=self.cancel_current).pack(side=tk.LEFT, padx=4, pady=2)
-        tk.Button(tb_run, text="Cancel All", command=self.cancel_all).pack(side=tk.LEFT, padx=4, pady=2)
-
-        # ---- Tasks table area (full width; no right sidebar anymore) ----
-        mid = tk.Frame(self, padx=10, pady=8)
-        mid.pack(fill=tk.BOTH, expand=True)
+        # ---- Split area: table (left) + scrollable right sidebar with buttons ----
+        mid = ttk.Panedwindow(self, orient="horizontal")
+        mid.pack(fill=tk.BOTH, expand=True, padx=10, pady=8)
         left_pane = tk.Frame(mid)
-        left_pane.pack(fill=tk.BOTH, expand=True)
+        right_shell = tk.Frame(mid)  # will contain a Canvas with vertical scrollbar
+        mid.add(left_pane, weight=4)
+        mid.add(right_shell, weight=1)
 
         cols = ("enabled", "level", "sequence", "preset", "status", "notes")
         self.tree = ttk.Treeview(left_pane, columns=cols, show="headings", selectmode="extended")
@@ -317,6 +303,7 @@ class MRQLauncher(tk.Tk):
         self.ctx_task.add_command(label="Add Task", command=self.add_task)
         self.ctx_task.add_command(label="Edit Task", command=self.edit_task)
         self.ctx_task.add_command(label="Duplicate Task", command=self.duplicate_task)
+        self.ctx_task.add_command(label="Remove Task(s)", command=self.remove_task)
         self.ctx_task.add_separator()
         self.ctx_task.add_command(label="Move Up", command=lambda: self.move_selected(-1))
         self.ctx_task.add_command(label="Move Down", command=lambda: self.move_selected(1))
@@ -332,8 +319,36 @@ class MRQLauncher(tk.Tk):
         self.tree.configure(xscrollcommand=hsb.set)
         hsb.pack(side=tk.BOTTOM, fill=tk.X)
 
+        # ---- Scrollable right sidebar (vertical layout; no clipping) ----
+        right_canvas = tk.Canvas(right_shell, highlightthickness=0)
+        right_scroll = ttk.Scrollbar(right_shell, orient="vertical", command=right_canvas.yview)
+        right_frame = tk.Frame(right_canvas)
+        right_frame.bind("<Configure>", lambda e: right_canvas.configure(scrollregion=right_canvas.bbox("all")))
+        right_canvas.create_window((0, 0), window=right_frame, anchor="nw")
+        right_canvas.configure(yscrollcommand=right_scroll.set)
+        right_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        right_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Selections group (vertical buttons)
+        grp_sel = ttk.LabelFrame(right_frame, text="Selections")
+        grp_sel.pack(fill=tk.X, pady=6)
+        tk.Button(grp_sel, text="Enable All Tasks", width=20, command=lambda: self.set_enabled_all(True)).pack(pady=2)
+        tk.Button(grp_sel, text="Disable All Tasks", width=20, command=lambda: self.set_enabled_all(False)).pack(pady=2)
+        tk.Button(grp_sel, text="Remove Task(s)", width=20, command=self.remove_task).pack(pady=2)
+        tk.Button(grp_sel, text="Toggle Selection", width=20, command=self.toggle_selected).pack(pady=2)
+        tk.Button(grp_sel, text="Move Up", width=20, command=lambda: self.move_selected(-1)).pack(pady=2)
+        tk.Button(grp_sel, text="Move Down", width=20, command=lambda: self.move_selected(1)).pack(pady=2)
+
+        # Render group (vertical buttons)
+        grp_run = ttk.LabelFrame(right_frame, text="Render")
+        grp_run.pack(fill=tk.X, pady=6)
+        tk.Button(grp_run, text="Render Selected", width=20, command=self.run_selected).pack(pady=2)
+        tk.Button(grp_run, text="Render Checked", width=20, command=self.run_enabled).pack(pady=2)
+        tk.Button(grp_run, text="Cancel Current", width=20, command=self.cancel_current).pack(pady=2)
+        tk.Button(grp_run, text="Cancel All", width=20, command=self.cancel_all).pack(pady=2)
+
         # ---- Group: Logs ----
-        # Logs controls moved to menu? keep quick buttons below table for convenience:
+        # Quick log buttons (remain under the table)
         logs_bar = tk.Frame(self, padx=10)
         logs_bar.pack(fill=tk.X, pady=(0, 4))
         tk.Button(logs_bar, text="Open Logs Folder", command=self.open_logs_folder).pack(side=tk.LEFT, padx=(0,6))
