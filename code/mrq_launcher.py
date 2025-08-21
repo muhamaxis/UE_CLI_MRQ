@@ -19,7 +19,7 @@ from tkinter import ttk
 
 def detect_default_unreal_cmd() -> str:
     candidates = [
-        # Прямые слэши, чтобы не было проблем с экранированием в Python-строках
+        # Use forward slashes to avoid escaping issues in Python strings
         "C:/Program Files/Epic Games/UE_5.6/Engine/Binaries/Win64/UnrealEditor-Cmd.exe",
         "C:/Program Files/Epic Games/UE_5.5/Engine/Binaries/Win64/UnrealEditor-Cmd.exe",
         "C:/Program Files/Epic Games/UE_5.4/Engine/Binaries/Win64/UnrealEditor-Cmd.exe",
@@ -31,23 +31,23 @@ def detect_default_unreal_cmd() -> str:
 
 
 def fs_to_soft_object(uasset_path: str) -> str:
-    """Путь к .uasset/.umap из папки Content → SoftObjectPath.
-    Ожидается: .../<Project>/Content/<Rel>/<Asset>.uasset
-    Результат: /Game/<Rel>/<Asset>.<Asset>
+    """Path to .uasset/.umap inside Content folder → SoftObjectPath.
+    Expected: .../<Project>/Content/<Rel>/<Asset>.uasset
+    Result: /Game/<Rel>/<Asset>.<Asset>
     """
     norm = os.path.normpath(uasset_path)
     if not norm.lower().endswith((".uasset", ".umap")):
-        raise ValueError("Выбери .uasset/.umap")
+        raise ValueError("Select a .uasset/.umap file")
     parts = norm.split(os.sep)
     if "Content" not in parts:
-        raise ValueError("Путь должен содержать папку 'Content' проекта.")
+        raise ValueError("Path must contain the project's 'Content' folder.")
     idx = len(parts) - 1 - parts[::-1].index("Content")
     rel_parts = parts[idx + 1:]
     asset_name = os.path.splitext(rel_parts[-1])[0]
     rel_dir = rel_parts[:-1]
     game_path = "/Game"
     if rel_dir:
-        # формируем путь сразу через прямой слэш
+        # Build the path using forward slashes
         game_path += "/" + "/".join(rel_dir)
     return f"{game_path}/{asset_name}.{asset_name}"
 
@@ -75,24 +75,24 @@ class RenderTask:
 class AppSettings:
     ue_cmd: str = field(default_factory=detect_default_unreal_cmd)
     tasks: List[RenderTask] = field(default_factory=list)
-    retries: int = 0  # автоповторы при ненулевом коде
+    retries: int = 0  # automatic retries on non-zero exit code
     fail_policy: str = "retry_then_next"  # retry_then_next | skip_next | stop_queue
-    kill_timeout_s: int = 10  # таймаут на мягкую отмену перед kill
+    kill_timeout_s: int = 10  # timeout for graceful cancel before kill
     windowed: bool = True
     resx: int = 1280
     resy: int = 720
     no_texture_streaming: bool = True
-    extra_cli: str = ""  # свободная строка для любых доп. аргументов
+    extra_cli: str = ""  # free-form string for additional arguments
 
 # -------------------------------------------------
-# Task Editor (единое окно выбора путей)
+# Task Editor (single window for selecting paths)
 # -------------------------------------------------
 
 class TaskEditor(tk.Toplevel):
     def __init__(self, master, task: Optional[RenderTask] = None):
         super().__init__(master)
         self.title("Task Editor")
-        # Разрешаем изменение размера окна редактора задачи
+        # Allow resizing of the task editor window
         self.resizable(True, True)
         self.result: Optional[RenderTask] = None
 
@@ -145,9 +145,9 @@ class TaskEditor(tk.Toplevel):
                     messagebox.showerror("Preset error", str(e))
 
         row("Project (.uproject)", self.var_uproj, pick_uproj)
-        row("Map (SoftObjectPath)", self.var_level, pick_level, "Напр.: /Game/Maps/MyMap.MyMap")
-        row("Level Sequence", self.var_seq, pick_seq, "Напр.: /Game/Cinematics/Shot.Shot")
-        row("MRQ Preset", self.var_preset, pick_preset, "Напр.: /Game/Cinematics/MoviePipeline/Presets/High.High")
+        row("Map (SoftObjectPath)", self.var_level, pick_level, "e.g.: /Game/Maps/MyMap.MyMap")
+        row("Level Sequence", self.var_seq, pick_seq, "e.g.: /Game/Cinematics/Shot.Shot")
+        row("MRQ Preset", self.var_preset, pick_preset, "e.g.: /Game/Cinematics/MoviePipeline/Presets/High.High")
 
         tk.Label(frm, text="Notes").pack(anchor="w")
         tk.Entry(frm, textvariable=self.var_notes, width=95).pack(fill="x")
@@ -167,13 +167,13 @@ class TaskEditor(tk.Toplevel):
             enabled=True,
         )
         if not (t.uproject and t.level and t.sequence and t.preset):
-            messagebox.showerror("Validation", "Заполни все поля.")
+            messagebox.showerror("Validation", "Fill in all fields.")
             return
         self.result = t
         self.destroy()
 
 # -------------------------------------------------
-# Main App (потокобезопасный лог + статусы)
+# Main App (thread-safe log + statuses)
 # -------------------------------------------------
 
 class MRQLauncher(tk.Tk):
@@ -188,7 +188,7 @@ class MRQLauncher(tk.Tk):
         self.log_queue: "queue.Queue[str]" = queue.Queue()
         self.ui_queue: "queue.Queue[tuple]" = queue.Queue()
         self.state: List[dict] = []  # {status, progress, start, end}
-        # --- Новое: общая runtime-очередь задач и флаг воркера
+        # --- New: shared runtime task queue and worker flag
         self.runtime_q: "queue.Queue[RenderTask]" = queue.Queue()
         self.worker_running: bool = False
         self._build_ui()
@@ -230,7 +230,7 @@ class MRQLauncher(tk.Tk):
         self.var_extra = StringVar(value=self.settings.extra_cli)
         tk.Entry(opts, textvariable=self.var_extra, width=60).pack(side=tk.LEFT, padx=(0,6), fill=tk.X, expand=True)
 
-        # Панель с делителем: слева таблица, справа кнопки
+        # Split panel: table on the left, buttons on the right
         mid = ttk.Panedwindow(self, orient="horizontal")
         mid.pack(fill=tk.BOTH, expand=True, padx=10, pady=8)
 
@@ -255,7 +255,7 @@ class MRQLauncher(tk.Tk):
         self.tree.bind("<Double-1>", self.on_tree_dblclick)
         self.tree.bind("<space>", self.on_space_toggle)
 
-        # Вертикальный и горизонтальный скроллбары
+        # Vertical and horizontal scrollbars
         sb = ttk.Scrollbar(left_pane, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=sb.set)
         sb.pack(side=tk.LEFT, fill=tk.Y)
@@ -295,7 +295,7 @@ class MRQLauncher(tk.Tk):
         tk.Button(grp_run, text="Run Selected", width=18, command=self.run_selected).pack(pady=2)
         tk.Button(grp_run, text="Run Enabled", width=18, command=self.run_enabled).pack(pady=2)
         tk.Button(grp_run, text="Run All", width=18, command=self.run_all).pack(pady=2)
-        tk.Button(grp_run, text="Добавить задачу в очередь…", width=18, command=self.add_task_and_enqueue).pack(pady=2)
+        tk.Button(grp_run, text="Add Task to Queue…", width=18, command=self.add_task_and_enqueue).pack(pady=2)
 
         # ---- Group: Stop / Cancel ----
         grp_stop = ttk.LabelFrame(right, text="Stop / Cancel")
@@ -524,7 +524,7 @@ class MRQLauncher(tk.Tk):
     def save_selected_tasks_dialog(self):
         sel = self._selected_indices()
         if not sel:
-            messagebox.showwarning("Save Task", "Выбери хотя бы одну задачу в таблице.")
+            messagebox.showwarning("Save Task", "Select at least one task in the table.")
             return
         if len(sel) == 1:
             t = self.settings.tasks[sel[0]]
@@ -553,9 +553,9 @@ class MRQLauncher(tk.Tk):
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
-    # ---- Progress parsing (без regex) ----
+    # ---- Progress parsing (without regex) ----
     def _extract_progress(self, line: str) -> Optional[int]:
-        # Пытаемся найти число перед знаком %
+        # Attempt to find a number before the % sign
         if "%" in line:
             i = line.find("%")
             j = i - 1
@@ -566,7 +566,7 @@ class MRQLauncher(tk.Tk):
                 v = int(digits)
                 if 0 <= v <= 100:
                     return v
-        # Пытаемся найти токен вида X/Y
+        # Attempt to find a token like X/Y
         tokens = line.replace("(", " ").replace(")", " ").replace("[", " ").replace("]", " ").split()
         for tok in tokens:
             if "/" in tok:
@@ -575,7 +575,7 @@ class MRQLauncher(tk.Tk):
                     a, b = int(parts[0]), int(parts[1])
                     if b > 0:
                         return max(0, min(100, int(a * 100 / b)))
-        # progress: NN или progress=NN
+        # progress: NN or progress=NN
         low = line.lower()
         for sep in (":", "="):
             key = "progress" + sep
@@ -662,15 +662,15 @@ class MRQLauncher(tk.Tk):
     def _run_queue(self, tasks: List[RenderTask]):
         ue_cmd = self.var_ue.get().strip()
         if not ue_cmd or not os.path.exists(ue_cmd):
-            messagebox.showerror("Error", "Укажи корректный путь к UnrealEditor-Cmd.exe")
+            messagebox.showerror("Error", "Specify a valid path to UnrealEditor-Cmd.exe")
             return
         if not tasks:
             if not self.worker_running:
-                messagebox.showinfo("Info", "Нет задач для запуска")
+                messagebox.showinfo("Info", "No tasks to run")
                 return
 
         self.stop_all = False
-        # Предварительно закинем задачи в runtime-очередь
+        # Preload tasks into runtime queue
         for t in tasks:
             self.runtime_q.put(t)
         if tasks:
@@ -679,7 +679,7 @@ class MRQLauncher(tk.Tk):
         policy = self.var_policy.get()
         kill_timeout = int(self.var_kill_timeout.get())
 
-        # пометить задачи как Queued (только те, что пришли сейчас)
+        # Mark tasks as Queued (only newly added ones)
         for t in tasks:
             try:
                 gi = self.settings.tasks.index(t)
@@ -718,7 +718,7 @@ class MRQLauncher(tk.Tk):
                            f"-LevelSequence=\"{t.sequence}\"", f"-MoviePipelineConfig=\"{t.preset}\"", "-log", "-notexturestreaming"]
                     self._log(f"[{idx}] Start (try {attempt}/{retries+1}): {' '.join(cmd)}")
 
-                    # статус
+                    # status
                     if gi is not None:
                         self.state[gi]["start"] = time.time()
                         self._set_status_async(gi, "Rendering 00:00")
@@ -734,7 +734,7 @@ class MRQLauncher(tk.Tk):
                         self._log(f"[{idx}] Failed to start: {e}")
                         break
 
-                    # --- Обновление статуса таймером MM:SS каждую секунду
+                    # --- Update status with MM:SS timer every second
                     def tick_elapsed(gidx: Optional[int]):
                         try:
                             while self.current_process and self.current_process.poll() is None:
@@ -746,7 +746,7 @@ class MRQLauncher(tk.Tk):
                         except Exception:
                             pass
 
-                    # --- Перекачка stdout → лог (без попыток % прогресса)
+                    # --- Forward stdout to log (without % progress attempts)
                     def pump(proc: subprocess.Popen, gidx: Optional[int]):
                         try:
                             if proc.stdout:
@@ -814,7 +814,7 @@ class MRQLauncher(tk.Tk):
             self._current_global_idx = None
             self.worker_running = False
 
-        # Если воркер еще не запущен — запускаем
+        # Start worker if not already running
         if not self.worker_running:
             threading.Thread(target=worker, daemon=True).start()
 
@@ -842,7 +842,7 @@ class MRQLauncher(tk.Tk):
         self.cancel_current()
         self._log("[Cancel] Stop-all requested.")
 
-    # Добавить новую задачу и сразу положить в runtime-очередь
+    # Add a new task and immediately place it in the runtime queue
     def add_task_and_enqueue(self):
         dlg = TaskEditor(self)
         self.wait_window(dlg)
@@ -859,11 +859,11 @@ class MRQLauncher(tk.Tk):
         self.refresh_tree()
         self.runtime_q.put(t)
         self._log("[+] Task added to running queue")
-        # Если очередь не была запущена — запустим воркер на одном элементе
+        # If the queue hasn't been started, launch the worker for a single item
         if not self.worker_running:
-            self._run_queue([])  # запустит воркер без первичного списка
+            self._run_queue([])  # starts the worker without an initial list
 
-    # Logging & UI queues (потокобезопасно)
+    # Logging & UI queues (thread-safe)
     def _log(self, msg: str):
         self.log_queue.put(msg)
 
