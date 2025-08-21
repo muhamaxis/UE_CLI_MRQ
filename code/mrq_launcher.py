@@ -14,6 +14,10 @@ from tkinter import filedialog, messagebox, StringVar
 from tkinter import ttk
 
 # -------------------------------------------------
+# App meta
+# -------------------------------------------------
+APP_VERSION = "1.0"
+# -------------------------------------------------
 # Helpers
 # -------------------------------------------------
 
@@ -179,7 +183,8 @@ class TaskEditor(tk.Toplevel):
 class MRQLauncher(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("MRQ Launcher (CLI)")
+        # Window title with version
+        self.title(f"MRQ Launcher (CLI) ver {APP_VERSION}")
         self.geometry("1320x840")
         self.settings = AppSettings()
         self.current_process: Optional[subprocess.Popen] = None
@@ -191,8 +196,12 @@ class MRQLauncher(tk.Tk):
         # --- New: shared runtime task queue and worker flag
         self.runtime_q: "queue.Queue[RenderTask]" = queue.Queue()
         self.worker_running: bool = False
+        # Session time label data
+        self._session_total_label: Optional[tk.Label] = None
         self._build_ui()
         self.after(50, self._drain_queues)
+        # Periodic update for the session total time label
+        self.after(500, self._tick_session_total)
 
     # UI
     def _build_ui(self):
@@ -230,14 +239,15 @@ class MRQLauncher(tk.Tk):
         self.var_extra = StringVar(value=self.settings.extra_cli)
         tk.Entry(opts, textvariable=self.var_extra, width=60).pack(side=tk.LEFT, padx=(0,6), fill=tk.X, expand=True)
 
-        # Split panel: table on the left, buttons on the right
+        # Split panel: table on the left, scrollable buttons on the right
         mid = ttk.Panedwindow(self, orient="horizontal")
         mid.pack(fill=tk.BOTH, expand=True, padx=10, pady=8)
 
         left_pane = tk.Frame(mid)
-        right_pane = tk.Frame(mid, padx=10)
+        # Right pane now is a scrollable area implemented via Canvas + inner Frame
+        right_shell = tk.Frame(mid)  # holds canvas + scrollbar
         mid.add(left_pane, weight=4)
-        mid.add(right_pane, weight=1)
+        mid.add(right_shell, weight=1)
 
         cols = ("enabled", "level", "sequence", "preset", "status", "notes")
         self.tree = ttk.Treeview(left_pane, columns=cols, show="headings", selectmode="extended")
@@ -263,7 +273,18 @@ class MRQLauncher(tk.Tk):
         self.tree.configure(xscrollcommand=hsb.set)
         hsb.pack(side=tk.BOTTOM, fill=tk.X)
 
-        right = right_pane
+        # ---- Scrollable right sidebar ----
+        right_canvas = tk.Canvas(right_shell, highlightthickness=0)
+        right_scroll = ttk.Scrollbar(right_shell, orient="vertical", command=right_canvas.yview)
+        right = tk.Frame(right_canvas)  # inner content frame
+        right.bind(
+            "<Configure>",
+            lambda e: right_canvas.configure(scrollregion=right_canvas.bbox("all"))
+        )
+        right_canvas.create_window((0, 0), window=right, anchor="nw")
+        right_canvas.configure(yscrollcommand=right_scroll.set)
+        right_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        right_scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
         # ---- Group: Tasks ----
         grp_tasks = ttk.LabelFrame(right, text="Tasks")
@@ -320,6 +341,13 @@ class MRQLauncher(tk.Tk):
         grp_logs.pack(fill=tk.X, pady=6)
         tk.Button(grp_logs, text="Open Logs Folder", width=18, command=self.open_logs_folder).pack(pady=2)
         tk.Button(grp_logs, text="Open Last Log (Selected)", width=18, command=self.open_last_log_for_selected).pack(pady=2)
+
+        # ---- Fixed session total time row (just under the table area) ----
+        # Sits below Panedwindow, above the log box.
+        bar = tk.Frame(self, padx=12)
+        bar.pack(fill=tk.X, padx=10, pady=(0, 0))
+        self._session_total_label = tk.Label(bar, text="Session total: 00:00:00", anchor="w")
+        self._session_total_label.pack(side=tk.LEFT)
 
         bottom = tk.Frame(self, padx=10, pady=6)
         bottom.pack(fill=tk.BOTH)
@@ -902,6 +930,35 @@ class MRQLauncher(tk.Tk):
                                        filetypes=[("UnrealEditor-Cmd", "UnrealEditor-Cmd.exe"), ("Exe", "*.exe"), ("All", "*.*")])
         if p:
             self.var_ue.set(p)
+
+    # ---- Session total time helpers ----
+    def _compute_session_total_seconds(self) -> int:
+        """Sum of finished task durations plus the currently running elapsed."""
+        total = 0
+        for i, st in enumerate(self.state):
+            start = st.get("start")
+            end = st.get("end")
+            if start and end:
+                total += max(0, int(end - start))
+        # If there is a running task, include its current elapsed
+        gi = self._current_global_idx
+        if gi is not None and 0 <= gi < len(self.state):
+            st = self.state[gi]
+            if st.get("start") and self.current_process and self.current_process.poll() is None:
+                total += max(0, int(time.time() - st["start"]))
+        return total
+
+    def _tick_session_total(self):
+        """Update the fixed label with HH:MM:SS."""
+        try:
+            if self._session_total_label is not None:
+                sec = self._compute_session_total_seconds()
+                h, rem = divmod(sec, 3600)
+                m, s = divmod(rem, 60)
+                self._session_total_label.config(text=f"Session total: {h:02d}:{m:02d}:{s:02d}")
+        finally:
+            # Re-schedule periodic update
+            self.after(500, self._tick_session_total)
 
 # -------------------------------------------------
 # Entrypoint
