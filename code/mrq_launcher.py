@@ -5,6 +5,7 @@ import queue
 import threading
 import time
 import sys
+import shlex
 from dataclasses import dataclass, asdict, field
 from typing import List, Optional
 from datetime import datetime
@@ -16,7 +17,7 @@ from tkinter import ttk
 # -------------------------------------------------
 # App meta
 # -------------------------------------------------
-APP_VERSION = "1.2.6"
+APP_VERSION = "1.2.7"
 # -------------------------------------------------
 # Helpers
 # -------------------------------------------------
@@ -771,8 +772,34 @@ class MRQLauncher(tk.Tk):
 
                 while attempt <= retries and not self.stop_all:
                     attempt += 1
-                    cmd = [ue_cmd, t.uproject, t.level.split(".")[0], "-game",
-                           f"-LevelSequence=\"{t.sequence}\"", f"-MoviePipelineConfig=\"{t.preset}\"", "-log", "-notexturestreaming"]
+                    # Build UE command with render options from UI
+                    cmd = [
+                        ue_cmd,
+                        t.uproject,
+                        t.level.split(".")[0],
+                        "-game",
+                        f"-LevelSequence=\"{t.sequence}\"",
+                        f"-MoviePipelineConfig=\"{t.preset}\"",
+                        "-log",
+                    ]
+                    # Windowed / Fullscreen and resolution
+                    if bool(self.var_windowed.get()):
+                        cmd.append("-windowed")
+                    else:
+                        cmd.append("-fullscreen")
+                    try:
+                        rx = int(self.var_resx.get())
+                        ry = int(self.var_resy.get())
+                        cmd += [f"-ResX={rx}", f"-ResY={ry}"]
+                    except Exception:
+                        pass
+                    # No Texture Streaming
+                    if bool(self.var_nts.get()):
+                        cmd.append("-notexturestreaming")
+                    # Extra CLI (split respecting quotes)
+                    extra = (self.var_extra.get() or "").strip()
+                    if extra:
+                        cmd += shlex.split(extra)
                     self._log(f"[{idx}] Start (try {attempt}/{retries+1}): {' '.join(cmd)}")
 
                     # status
