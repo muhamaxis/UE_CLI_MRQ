@@ -274,6 +274,23 @@ class MRQLauncher(tk.Tk):
         self.var_extra = StringVar(value=self.settings.extra_cli)
         tk.Entry(opts, textvariable=self.var_extra, width=60).pack(side=tk.LEFT, padx=(0,6), fill=tk.X, expand=True)
 
+        # ---- Toolbar: quick Selections & Render buttons (kept in Menu as well) ----
+        toolbar = tk.Frame(self, padx=10, pady=2)
+        toolbar.pack(fill=tk.X)
+        # Selections group
+        tb_sel = tk.LabelFrame(toolbar, text="Selections")
+        tb_sel.pack(side=tk.LEFT, padx=(0,10))
+        tk.Button(tb_sel, text="Enable All Tasks", command=lambda: self.set_enabled_all(True)).pack(side=tk.LEFT, padx=4, pady=2)
+        tk.Button(tb_sel, text="Disable All Tasks", command=lambda: self.set_enabled_all(False)).pack(side=tk.LEFT, padx=4, pady=2)
+        tk.Button(tb_sel, text="Toggle Selection", command=self.toggle_selected).pack(side=tk.LEFT, padx=4, pady=2)
+        # Render group
+        tb_run = tk.LabelFrame(toolbar, text="Render")
+        tb_run.pack(side=tk.LEFT, padx=(0,10))
+        tk.Button(tb_run, text="Render Selected", command=self.run_selected).pack(side=tk.LEFT, padx=4, pady=2)
+        tk.Button(tb_run, text="Render Checked", command=self.run_enabled).pack(side=tk.LEFT, padx=4, pady=2)
+        tk.Button(tb_run, text="Cancel Current", command=self.cancel_current).pack(side=tk.LEFT, padx=4, pady=2)
+        tk.Button(tb_run, text="Cancel All", command=self.cancel_all).pack(side=tk.LEFT, padx=4, pady=2)
+
         # ---- Tasks table area (full width; no right sidebar anymore) ----
         mid = tk.Frame(self, padx=10, pady=8)
         mid.pack(fill=tk.BOTH, expand=True)
@@ -295,6 +312,17 @@ class MRQLauncher(tk.Tk):
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.tree.bind("<Double-1>", self.on_tree_dblclick)
         self.tree.bind("<space>", self.on_space_toggle)
+        # Right-click context menu for task operations
+        self.ctx_task = tk.Menu(self, tearoff=0)
+        self.ctx_task.add_command(label="Add Task", command=self.add_task)
+        self.ctx_task.add_command(label="Edit Task", command=self.edit_task)
+        self.ctx_task.add_command(label="Duplicate Task", command=self.duplicate_task)
+        self.ctx_task.add_separator()
+        self.ctx_task.add_command(label="Move Up", command=lambda: self.move_selected(-1))
+        self.ctx_task.add_command(label="Move Down", command=lambda: self.move_selected(1))
+        # Bind right-click (Button-3 on Windows/Linux; macOS users often use Ctrl-Click)
+        self.tree.bind("<Button-3>", self._on_tree_right_click)
+        self.tree.bind("<Control-Button-1>", self._on_tree_right_click)
 
         # Vertical and horizontal scrollbars for the task table
         sb = ttk.Scrollbar(left_pane, orient="vertical", command=self.tree.yview)
@@ -324,6 +352,21 @@ class MRQLauncher(tk.Tk):
         self.log.pack(fill=tk.BOTH, expand=True)
 
         self.refresh_tree()
+
+    def _on_tree_right_click(self, event):
+        """Select row under cursor and show the task context menu."""
+        try:
+            # Focus the row under the cursor
+            iid = self.tree.identify_row(event.y)
+            if iid:
+                # If the row isn't selected, make it the only selection
+                if iid not in self.tree.selection():
+                    self.tree.selection_set(iid)
+                    self.tree.focus(iid)
+            # Popup the context menu
+            self.ctx_task.tk_popup(event.x_root, event.y_root)
+        finally:
+            self.ctx_task.grab_release()
 
     # ---- Runtime state helpers ----
     def _ensure_state(self):
