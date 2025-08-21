@@ -4,6 +4,7 @@ import json
 import queue
 import threading
 import time
+import sys
 from dataclasses import dataclass, asdict, field
 from typing import List, Optional
 from datetime import datetime
@@ -77,6 +78,11 @@ class AppSettings:
     retries: int = 0  # автоповторы при ненулевом коде
     fail_policy: str = "retry_then_next"  # retry_then_next | skip_next | stop_queue
     kill_timeout_s: int = 10  # таймаут на мягкую отмену перед kill
+    windowed: bool = True
+    resx: int = 1280
+    resy: int = 720
+    no_texture_streaming: bool = True
+    extra_cli: str = ""  # свободная строка для любых доп. аргументов
 
 # -------------------------------------------------
 # Task Editor (единое окно выбора путей)
@@ -203,6 +209,23 @@ class MRQLauncher(tk.Tk):
         self.var_kill_timeout = tk.IntVar(value=self.settings.kill_timeout_s)
         tk.Spinbox(top, from_=0, to=120, width=4, textvariable=self.var_kill_timeout).pack(side=tk.LEFT)
 
+        # ---- Row: Render opts (windowed / res / NTS / extra) ----
+        opts = tk.Frame(self, padx=10, pady=4)
+        opts.pack(fill=tk.X)
+        self.var_windowed = tk.BooleanVar(value=self.settings.windowed)
+        tk.Checkbutton(opts, text="Windowed", variable=self.var_windowed).pack(side=tk.LEFT)
+        tk.Label(opts, text="ResX:").pack(side=tk.LEFT, padx=(12,4))
+        self.var_resx = tk.IntVar(value=self.settings.resx)
+        tk.Spinbox(opts, from_=320, to=16384, width=6, textvariable=self.var_resx).pack(side=tk.LEFT)
+        tk.Label(opts, text="ResY:").pack(side=tk.LEFT, padx=(12,4))
+        self.var_resy = tk.IntVar(value=self.settings.resy)
+        tk.Spinbox(opts, from_=240, to=16384, width=6, textvariable=self.var_resy).pack(side=tk.LEFT)
+        self.var_nts = tk.BooleanVar(value=self.settings.no_texture_streaming)
+        tk.Checkbutton(opts, text="No Texture Streaming (-notexturestreaming)", variable=self.var_nts).pack(side=tk.LEFT, padx=(12,0))
+        tk.Label(opts, text="Extra CLI:").pack(side=tk.LEFT, padx=(12,4))
+        self.var_extra = StringVar(value=self.settings.extra_cli)
+        tk.Entry(opts, textvariable=self.var_extra, width=60).pack(side=tk.LEFT, padx=(0,6), fill=tk.X, expand=True)
+
         mid = tk.Frame(self, padx=10, pady=8)
         mid.pack(fill=tk.BOTH, expand=True)
 
@@ -277,6 +300,12 @@ class MRQLauncher(tk.Tk):
         grp_qio.pack(fill=tk.X, pady=6)
         tk.Button(grp_qio, text="Load JSON…", width=18, command=self.load_json_dialog).pack(pady=2)
         tk.Button(grp_qio, text="Save JSON…", width=18, command=self.save_json_dialog).pack(pady=2)
+
+        # ---- Group: Logs ----
+        grp_logs = ttk.LabelFrame(right, text="Logs")
+        grp_logs.pack(fill=tk.X, pady=6)
+        tk.Button(grp_logs, text="Open Logs Folder", width=18, command=self.open_logs_folder).pack(pady=2)
+        tk.Button(grp_logs, text="Open Last Log (Selected)", width=18, command=self.open_last_log_for_selected).pack(pady=2)
 
         bottom = tk.Frame(self, padx=10, pady=6)
         bottom.pack(fill=tk.BOTH)
@@ -407,9 +436,21 @@ class MRQLauncher(tk.Tk):
         self.settings.retries = int(data.get("retries", self.settings.retries))
         self.settings.fail_policy = data.get("fail_policy", self.settings.fail_policy)
         self.settings.kill_timeout_s = int(data.get("kill_timeout_s", self.settings.kill_timeout_s))
+        # render opts
+        self.settings.windowed = bool(data.get("windowed", self.settings.windowed))
+        self.settings.resx = int(data.get("resx", self.settings.resx))
+        self.settings.resy = int(data.get("resy", self.settings.resy))
+        self.settings.no_texture_streaming = bool(data.get("no_texture_streaming", self.settings.no_texture_streaming))
+        self.settings.extra_cli = data.get("extra_cli", self.settings.extra_cli)
+
         self.var_retries.set(self.settings.retries)
         self.var_policy.set(self.settings.fail_policy)
         self.var_kill_timeout.set(self.settings.kill_timeout_s)
+        self.var_windowed.set(self.settings.windowed)
+        self.var_resx.set(self.settings.resx)
+        self.var_resy.set(self.settings.resy)
+        self.var_nts.set(self.settings.no_texture_streaming)
+        self.var_extra.set(self.settings.extra_cli)
         self.settings.tasks = [RenderTask(**{**it, **({"enabled": True} if "enabled" not in it else {})}) for it in data.get("tasks", [])]
         self.state = [{"status": "—", "progress": None, "start": None, "end": None} for _ in self.settings.tasks]
         self.refresh_tree()
@@ -420,6 +461,11 @@ class MRQLauncher(tk.Tk):
             "retries": int(self.var_retries.get()),
             "fail_policy": self.var_policy.get(),
             "kill_timeout_s": int(self.var_kill_timeout.get()),
+            "windowed": bool(self.var_windowed.get()),
+            "resx": int(self.var_resx.get()),
+            "resy": int(self.var_resy.get()),
+            "no_texture_streaming": bool(self.var_nts.get()),
+            "extra_cli": self.var_extra.get().strip(),
             "tasks": [asdict(t) for t in self.settings.tasks],
         }
         with open(path, "w", encoding="utf-8") as f:
@@ -554,9 +600,50 @@ class MRQLauncher(tk.Tk):
     def _task_logfile(self, task: RenderTask) -> str:
         base = f"{soft_name(task.level)}__{soft_name(task.sequence)}__{soft_name(task.preset)}"
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        logs_dir = os.path.join(os.getcwd(), "mrq_logs")
+        logs_dir = self._logs_dir()
         os.makedirs(logs_dir, exist_ok=True)
         return os.path.join(logs_dir, f"{ts}_{base}.log")
+
+    def _logs_dir(self) -> str:
+        return os.path.join(os.getcwd(), "mrq_logs")
+
+    def open_logs_folder(self):
+        try:
+            path = self._logs_dir()
+            os.makedirs(path, exist_ok=True)
+            if os.name == "nt":
+                os.startfile(path)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", path])
+            else:
+                subprocess.Popen(["xdg-open", path])
+        except Exception as e:
+            self._log(f"[Logs] {e}")
+
+    def open_last_log_for_selected(self):
+        sel = self._selected_indices()
+        if not sel:
+            self._log("[Logs] Select a task first")
+            return
+        # find latest log for the first selected task by basename pattern
+        t = self.settings.tasks[sel[0]]
+        base = f"{soft_name(t.level)}__{soft_name(t.sequence)}__{soft_name(t.preset)}"
+        folder = self._logs_dir()
+        try:
+            files = [f for f in os.listdir(folder) if f.endswith(".log") and f.endswith(f"{base}.log")]
+            if not files:
+                self._log("[Logs] No logs found for selected task")
+                return
+            files.sort(reverse=True)
+            full = os.path.join(folder, files[0])
+            if os.name == "nt":
+                os.startfile(full)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", full])
+            else:
+                subprocess.Popen(["xdg-open", full])
+        except Exception as e:
+            self._log(f"[Logs] {e}")
 
     def _run_queue(self, tasks: List[RenderTask]):
         ue_cmd = self.var_ue.get().strip()
@@ -600,7 +687,20 @@ class MRQLauncher(tk.Tk):
                 while attempt <= retries and not self.stop_all:
                     attempt += 1
                     cmd = [ue_cmd, t.uproject, t.level.split(".")[0], "-game",
-                           f"-LevelSequence=\"{t.sequence}\"", f"-MoviePipelineConfig=\"{t.preset}\"", "-log", "-notexturestreaming"]
+                           f"-LevelSequence=\"{t.sequence}\"", f"-MoviePipelineConfig=\"{t.preset}\"", "-log"]
+                    # windowed & resolution (per Epic docs example)
+                    if bool(self.var_windowed.get()):
+                        cmd.append("-windowed")
+                    rx = int(self.var_resx.get())
+                    ry = int(self.var_resy.get())
+                    if rx > 0 and ry > 0:
+                        cmd += [f"-resx={rx}", f"-resy={ry}"]
+                    if bool(self.var_nts.get()):
+                        cmd.append("-notexturestreaming")
+                    extra = self.var_extra.get().strip()
+                    if extra:
+                        # разрезаем по пробелам без кавычек; если нужно — пользователь сам проставит кавычки
+                        cmd += extra.split()
                     self._log(f"[{idx}] Start (try {attempt}/{retries+1}): {' '.join(cmd)}")
 
                     # статус
