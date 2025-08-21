@@ -16,7 +16,7 @@ from tkinter import ttk
 # -------------------------------------------------
 # App meta
 # -------------------------------------------------
-APP_VERSION = "1.2.5"
+APP_VERSION = "1.2.6"
 # -------------------------------------------------
 # Helpers
 # -------------------------------------------------
@@ -792,9 +792,11 @@ class MRQLauncher(tk.Tk):
                         break
 
                     # --- Update status with MM:SS timer every second
-                    def tick_elapsed(gidx: Optional[int]):
+                    # IMPORTANT: bind the ticker to THIS process, not self.current_process,
+                    # so it cannot continue when the next task starts.
+                    def tick_elapsed(gidx: Optional[int], proc: subprocess.Popen):
                         try:
-                            while self.current_process and self.current_process.poll() is None:
+                            while proc and proc.poll() is None and not self.stop_all:
                                 if gidx is not None and self.state[gidx]["start"]:
                                     elapsed = int(time.time() - self.state[gidx]["start"])
                                     m, s = divmod(elapsed, 60)
@@ -822,10 +824,16 @@ class MRQLauncher(tk.Tk):
 
                     th_pump = threading.Thread(target=pump, args=(self.current_process, gi), daemon=True)
                     th_pump.start()
-                    th_tick = threading.Thread(target=tick_elapsed, args=(gi,), daemon=True)
+                    # Pass the concrete process handle to the ticker
+                    th_tick = threading.Thread(target=tick_elapsed, args=(gi, self.current_process), daemon=True)
                     th_tick.start()
                     rc = self.current_process.wait()
                     self._log(f"[{idx}] Exit code: {rc}")
+                    # Stop ticker ASAP for this process
+                    try:
+                        th_tick.join(timeout=0.2)
+                    except Exception:
+                        pass
                     self.current_process = None
                     try:
                         log_fp.write(f"\nEXIT: {rc}\n")
