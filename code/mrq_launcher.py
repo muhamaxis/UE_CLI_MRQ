@@ -205,6 +205,41 @@ class MRQLauncher(tk.Tk):
 
     # UI
     def _build_ui(self):
+        # ---- Menu Bar (replaces right-side buttons) ----
+        menubar = tk.Menu(self)
+        # Task
+        m_task = tk.Menu(menubar, tearoff=0)
+        m_task.add_command(label="Add Task", command=self.add_task)
+        m_task.add_command(label="Edit Task", command=self.edit_task)
+        m_task.add_command(label="Duplicate Task", command=self.duplicate_task)
+        m_task.add_separator()
+        m_task.add_command(label="Move Up", command=lambda: self.move_selected(-1))
+        m_task.add_command(label="Move Down", command=lambda: self.move_selected(1))
+        menubar.add_cascade(label="Task", menu=m_task)
+        # Selections
+        m_sel = tk.Menu(menubar, tearoff=0)
+        m_sel.add_command(label="Enable All Tasks", command=lambda: self.set_enabled_all(True))
+        m_sel.add_command(label="Disable All Tasks", command=lambda: self.set_enabled_all(False))
+        m_sel.add_command(label="Toggle Selection", command=self.toggle_selected)
+        menubar.add_cascade(label="Selections", menu=m_sel)
+        # Render
+        m_run = tk.Menu(menubar, tearoff=0)
+        m_run.add_command(label="Render Selected", command=self.run_selected)
+        m_run.add_command(label="Render Checked", command=self.run_enabled)
+        m_run.add_separator()
+        m_run.add_command(label="Cancel Current", command=self.cancel_current)
+        m_run.add_command(label="Cancel All", command=self.cancel_all)
+        menubar.add_cascade(label="Render", menu=m_run)
+        # Save
+        m_save = tk.Menu(menubar, tearoff=0)
+        m_save.add_command(label="Load Task(s)", command=self.load_tasks_dialog)
+        m_save.add_command(label="Save Selected Task(s)", command=self.save_selected_tasks_dialog)
+        m_save.add_separator()
+        m_save.add_command(label="Load Queue", command=self.load_json_dialog)
+        m_save.add_command(label="Save Queue", command=self.save_json_dialog)
+        menubar.add_cascade(label="Save", menu=m_save)
+        self.config(menu=menubar)
+
         top = tk.Frame(self, padx=10, pady=8)
         top.pack(fill=tk.X)
         tk.Label(top, text="UnrealEditor-Cmd.exe:").pack(side=tk.LEFT)
@@ -239,15 +274,11 @@ class MRQLauncher(tk.Tk):
         self.var_extra = StringVar(value=self.settings.extra_cli)
         tk.Entry(opts, textvariable=self.var_extra, width=60).pack(side=tk.LEFT, padx=(0,6), fill=tk.X, expand=True)
 
-        # Split panel: table on the left, scrollable buttons on the right
-        mid = ttk.Panedwindow(self, orient="horizontal")
-        mid.pack(fill=tk.BOTH, expand=True, padx=10, pady=8)
-
+        # ---- Tasks table area (full width; no right sidebar anymore) ----
+        mid = tk.Frame(self, padx=10, pady=8)
+        mid.pack(fill=tk.BOTH, expand=True)
         left_pane = tk.Frame(mid)
-        # Right pane now is a scrollable area implemented via Canvas + inner Frame
-        right_shell = tk.Frame(mid)  # holds canvas + scrollbar
-        mid.add(left_pane, weight=4)
-        mid.add(right_shell, weight=1)
+        left_pane.pack(fill=tk.BOTH, expand=True)
 
         cols = ("enabled", "level", "sequence", "preset", "status", "notes")
         self.tree = ttk.Treeview(left_pane, columns=cols, show="headings", selectmode="extended")
@@ -265,7 +296,7 @@ class MRQLauncher(tk.Tk):
         self.tree.bind("<Double-1>", self.on_tree_dblclick)
         self.tree.bind("<space>", self.on_space_toggle)
 
-        # Vertical and horizontal scrollbars
+        # Vertical and horizontal scrollbars for the task table
         sb = ttk.Scrollbar(left_pane, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=sb.set)
         sb.pack(side=tk.LEFT, fill=tk.Y)
@@ -273,77 +304,15 @@ class MRQLauncher(tk.Tk):
         self.tree.configure(xscrollcommand=hsb.set)
         hsb.pack(side=tk.BOTTOM, fill=tk.X)
 
-        # ---- Scrollable right sidebar ----
-        right_canvas = tk.Canvas(right_shell, highlightthickness=0)
-        right_scroll = ttk.Scrollbar(right_shell, orient="vertical", command=right_canvas.yview)
-        right = tk.Frame(right_canvas)  # inner content frame
-        right.bind(
-            "<Configure>",
-            lambda e: right_canvas.configure(scrollregion=right_canvas.bbox("all"))
-        )
-        right_canvas.create_window((0, 0), window=right, anchor="nw")
-        right_canvas.configure(yscrollcommand=right_scroll.set)
-        right_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        right_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-
-        # ---- Group: Tasks ----
-        grp_tasks = ttk.LabelFrame(right, text="Tasks")
-        grp_tasks.pack(fill=tk.X, pady=4)
-        for text, cmd in (
-            ("Add…", self.add_task),
-            ("Edit…", self.edit_task),
-            ("Duplicate", self.duplicate_task),
-            ("Remove", self.remove_task),
-        ):
-            tk.Button(grp_tasks, text=text, width=18, command=cmd).pack(pady=2)
-
-        # ---- Group: Order ----
-        grp_order = ttk.LabelFrame(right, text="Order")
-        grp_order.pack(fill=tk.X, pady=6)
-        tk.Button(grp_order, text="Move Up", width=18, command=lambda: self.move_selected(-1)).pack(pady=2)
-        tk.Button(grp_order, text="Move Down", width=18, command=lambda: self.move_selected(1)).pack(pady=2)
-
-        # ---- Group: Selection ----
-        grp_sel = ttk.LabelFrame(right, text="Selection")
-        grp_sel.pack(fill=tk.X, pady=6)
-        tk.Button(grp_sel, text="Enable All", width=18, command=lambda: self.set_enabled_all(True)).pack(pady=2)
-        tk.Button(grp_sel, text="Disable All", width=18, command=lambda: self.set_enabled_all(False)).pack(pady=2)
-        tk.Button(grp_sel, text="Toggle", width=18, command=self.toggle_selected).pack(pady=2)
-
-        # ---- Group: Run ----
-        grp_run = ttk.LabelFrame(right, text="Run")
-        grp_run.pack(fill=tk.X, pady=6)
-        tk.Button(grp_run, text="Run Selected", width=18, command=self.run_selected).pack(pady=2)
-        tk.Button(grp_run, text="Run Enabled", width=18, command=self.run_enabled).pack(pady=2)
-        tk.Button(grp_run, text="Run All", width=18, command=self.run_all).pack(pady=2)
-        tk.Button(grp_run, text="Add Task to Queue…", width=18, command=self.add_task_and_enqueue).pack(pady=2)
-
-        # ---- Group: Stop / Cancel ----
-        grp_stop = ttk.LabelFrame(right, text="Stop / Cancel")
-        grp_stop.pack(fill=tk.X, pady=6)
-        tk.Button(grp_stop, text="Cancel Current", width=18, command=self.cancel_current).pack(pady=2)
-        tk.Button(grp_stop, text="Cancel All", width=18, command=self.cancel_all).pack(pady=2)
-
-        # ---- Group: Task I/O ----
-        grp_taskio = ttk.LabelFrame(right, text="Task I/O")
-        grp_taskio.pack(fill=tk.X, pady=6)
-        tk.Button(grp_taskio, text="Load Task(s)…", width=18, command=self.load_tasks_dialog).pack(pady=2)
-        tk.Button(grp_taskio, text="Save Selected Task(s)…", width=18, command=self.save_selected_tasks_dialog).pack(pady=2)
-
-        # ---- Group: Queue I/O ----
-        grp_qio = ttk.LabelFrame(right, text="Queue I/O")
-        grp_qio.pack(fill=tk.X, pady=6)
-        tk.Button(grp_qio, text="Load JSON…", width=18, command=self.load_json_dialog).pack(pady=2)
-        tk.Button(grp_qio, text="Save JSON…", width=18, command=self.save_json_dialog).pack(pady=2)
-
         # ---- Group: Logs ----
-        grp_logs = ttk.LabelFrame(right, text="Logs")
-        grp_logs.pack(fill=tk.X, pady=6)
-        tk.Button(grp_logs, text="Open Logs Folder", width=18, command=self.open_logs_folder).pack(pady=2)
-        tk.Button(grp_logs, text="Open Last Log (Selected)", width=18, command=self.open_last_log_for_selected).pack(pady=2)
+        # Logs controls moved to menu? keep quick buttons below table for convenience:
+        logs_bar = tk.Frame(self, padx=10)
+        logs_bar.pack(fill=tk.X, pady=(0, 4))
+        tk.Button(logs_bar, text="Open Logs Folder", command=self.open_logs_folder).pack(side=tk.LEFT, padx=(0,6))
+        tk.Button(logs_bar, text="Open Last Log (Selected)", command=self.open_last_log_for_selected).pack(side=tk.LEFT)
 
         # ---- Fixed session total time row (just under the table area) ----
-        # Sits below Panedwindow, above the log box.
+        # Sits above the log box.
         bar = tk.Frame(self, padx=12)
         bar.pack(fill=tk.X, padx=10, pady=(0, 0))
         self._session_total_label = tk.Label(bar, text="Session total: 00:00:00", anchor="w")
