@@ -227,6 +227,7 @@ class MRQLauncher(tk.Tk):
         m_run = tk.Menu(menubar, tearoff=0)
         m_run.add_command(label="Render Selected", command=self.run_selected)
         m_run.add_command(label="Render Checked", command=self.run_enabled)
+        m_run.add_command(label="Add Task(s) to Queue", command=self.add_task_and_enqueue)
         m_run.add_separator()
         m_run.add_command(label="Cancel Current", command=self.cancel_current)
         m_run.add_command(label="Cancel All", command=self.cancel_all)
@@ -344,6 +345,7 @@ class MRQLauncher(tk.Tk):
         grp_run.pack(fill=tk.X, pady=6)
         tk.Button(grp_run, text="Render Selected", width=20, command=self.run_selected).pack(pady=2)
         tk.Button(grp_run, text="Render Checked", width=20, command=self.run_enabled).pack(pady=2)
+        tk.Button(grp_run, text="Add Task(s) to Queue", width=20, command=self.add_task_and_enqueue).pack(pady=2)
         tk.Button(grp_run, text="Cancel Current", width=20, command=self.cancel_current).pack(pady=2)
         tk.Button(grp_run, text="Cancel All", width=20, command=self.cancel_all).pack(pady=2)
 
@@ -897,13 +899,14 @@ class MRQLauncher(tk.Tk):
         self.cancel_current()
         self._log("[Cancel] Stop-all requested.")
 
-    # Add a new task and immediately place it in the runtime queue
     def add_task_and_enqueue(self):
+        """Create a new task and enqueue it into the running queue without stopping the worker."""
         dlg = TaskEditor(self)
         self.wait_window(dlg)
         if not dlg.result:
             return
         t = dlg.result
+        # Add to app list and UI
         self.settings.tasks.append(t)
         self._ensure_state()
         try:
@@ -912,11 +915,13 @@ class MRQLauncher(tk.Tk):
         except ValueError:
             pass
         self.refresh_tree()
-        self.runtime_q.put(t)
-        self._log("[+] Task added to running queue")
-        # If the queue hasn't been started, launch the worker for a single item
-        if not self.worker_running:
-            self._run_queue([])  # starts the worker without an initial list
+        # If worker is already running — just push into runtime queue.
+        # If not — start worker by calling _run_queue([t]) (it enqueues and launches worker).
+        if self.worker_running:
+            self.runtime_q.put(t)
+            self._log("[+] Task added to running queue")
+        else:
+            self._run_queue([t])
 
     # Logging & UI queues (thread-safe)
     def _log(self, msg: str):
