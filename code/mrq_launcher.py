@@ -92,7 +92,8 @@ class TaskEditor(tk.Toplevel):
     def __init__(self, master, task: Optional[RenderTask] = None):
         super().__init__(master)
         self.title("Task Editor")
-        self.resizable(False, False)
+        # Разрешаем изменение размера окна редактора задачи
+        self.resizable(True, True)
         self.result: Optional[RenderTask] = None
 
         self.var_uproj = StringVar(value=(task.uproject if task else ""))
@@ -187,6 +188,9 @@ class MRQLauncher(tk.Tk):
         self.log_queue: "queue.Queue[str]" = queue.Queue()
         self.ui_queue: "queue.Queue[tuple]" = queue.Queue()
         self.state: List[dict] = []  # {status, progress, start, end}
+        # --- Новое: общая runtime-очередь задач и флаг воркера
+        self.runtime_q: "queue.Queue[RenderTask]" = queue.Queue()
+        self.worker_running: bool = False
         self._build_ui()
         self.after(50, self._drain_queues)
 
@@ -226,11 +230,17 @@ class MRQLauncher(tk.Tk):
         self.var_extra = StringVar(value=self.settings.extra_cli)
         tk.Entry(opts, textvariable=self.var_extra, width=60).pack(side=tk.LEFT, padx=(0,6), fill=tk.X, expand=True)
 
-        mid = tk.Frame(self, padx=10, pady=8)
-        mid.pack(fill=tk.BOTH, expand=True)
+        # Панель с делителем: слева таблица, справа кнопки
+        mid = ttk.Panedwindow(self, orient="horizontal")
+        mid.pack(fill=tk.BOTH, expand=True, padx=10, pady=8)
+
+        left_pane = tk.Frame(mid)
+        right_pane = tk.Frame(mid, padx=10)
+        mid.add(left_pane, weight=4)
+        mid.add(right_pane, weight=1)
 
         cols = ("enabled", "level", "sequence", "preset", "status", "notes")
-        self.tree = ttk.Treeview(mid, columns=cols, show="headings", selectmode="extended")
+        self.tree = ttk.Treeview(left_pane, columns=cols, show="headings", selectmode="extended")
         for name, title, width in (
             ("enabled", "✔", 40),
             ("level", "Level", 220),
@@ -245,12 +255,15 @@ class MRQLauncher(tk.Tk):
         self.tree.bind("<Double-1>", self.on_tree_dblclick)
         self.tree.bind("<space>", self.on_space_toggle)
 
-        sb = ttk.Scrollbar(mid, orient="vertical", command=self.tree.yview)
+        # Вертикальный и горизонтальный скроллбары
+        sb = ttk.Scrollbar(left_pane, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=sb.set)
         sb.pack(side=tk.LEFT, fill=tk.Y)
+        hsb = ttk.Scrollbar(left_pane, orient="horizontal", command=self.tree.xview)
+        self.tree.configure(xscrollcommand=hsb.set)
+        hsb.pack(side=tk.BOTTOM, fill=tk.X)
 
-        right = tk.Frame(mid, padx=10)
-        right.pack(side=tk.LEFT, fill=tk.Y)
+        right = right_pane
 
         # ---- Group: Tasks ----
         grp_tasks = ttk.LabelFrame(right, text="Tasks")
@@ -282,6 +295,7 @@ class MRQLauncher(tk.Tk):
         tk.Button(grp_run, text="Run Selected", width=18, command=self.run_selected).pack(pady=2)
         tk.Button(grp_run, text="Run Enabled", width=18, command=self.run_enabled).pack(pady=2)
         tk.Button(grp_run, text="Run All", width=18, command=self.run_all).pack(pady=2)
+        tk.Button(grp_run, text="Добавить задачу в очередь…", width=18, command=self.add_task_and_enqueue).pack(pady=2)
 
         # ---- Group: Stop / Cancel ----
         grp_stop = ttk.LabelFrame(right, text="Stop / Cancel")
@@ -600,7 +614,7 @@ class MRQLauncher(tk.Tk):
     def _task_logfile(self, task: RenderTask) -> str:
         base = f"{soft_name(task.level)}__{soft_name(task.sequence)}__{soft_name(task.preset)}"
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        logs_dir = self._logs_dir()
+        logs_dir = os.path.join(os.getcwd(), "mrq_logs")
         os.makedirs(logs_dir, exist_ok=True)
         return os.path.join(logs_dir, f"{ts}_{base}.log")
 
@@ -651,16 +665,21 @@ class MRQLauncher(tk.Tk):
             messagebox.showerror("Error", "Укажи корректный путь к UnrealEditor-Cmd.exe")
             return
         if not tasks:
-            messagebox.showinfo("Info", "Нет задач для запуска")
-            return
+            if not self.worker_running:
+                messagebox.showinfo("Info", "Нет задач для запуска")
+                return
 
         self.stop_all = False
-        self._log(f"== Launch {len(tasks)} task(s) ==")
+        # Предварительно закинем задачи в runtime-очередь
+        for t in tasks:
+            self.runtime_q.put(t)
+        if tasks:
+            self._log(f"== Enqueued {len(tasks)} task(s) ==")
         retries = int(self.var_retries.get())
         policy = self.var_policy.get()
         kill_timeout = int(self.var_kill_timeout.get())
 
-        # пометить задачи как Queued
+        # пометить задачи как Queued (только те, что пришли сейчас)
         for t in tasks:
             try:
                 gi = self.settings.tasks.index(t)
@@ -668,8 +687,17 @@ class MRQLauncher(tk.Tk):
             except ValueError:
                 pass
 
-        def worker(queue_tasks: List[RenderTask]):
-            for idx, t in enumerate(queue_tasks, 1):
+        def worker():
+            self.worker_running = True
+            idx = 0
+            while True:
+                if self.stop_all and self.runtime_q.empty():
+                    break
+                try:
+                    t = self.runtime_q.get(timeout=0.5)
+                except queue.Empty:
+                    continue
+                idx += 1
                 if self.stop_all:
                     break
                 if not all([t.uproject, t.level, t.sequence, t.preset]):
@@ -687,26 +715,13 @@ class MRQLauncher(tk.Tk):
                 while attempt <= retries and not self.stop_all:
                     attempt += 1
                     cmd = [ue_cmd, t.uproject, t.level.split(".")[0], "-game",
-                           f"-LevelSequence=\"{t.sequence}\"", f"-MoviePipelineConfig=\"{t.preset}\"", "-log"]
-                    # windowed & resolution (per Epic docs example)
-                    if bool(self.var_windowed.get()):
-                        cmd.append("-windowed")
-                    rx = int(self.var_resx.get())
-                    ry = int(self.var_resy.get())
-                    if rx > 0 and ry > 0:
-                        cmd += [f"-resx={rx}", f"-resy={ry}"]
-                    if bool(self.var_nts.get()):
-                        cmd.append("-notexturestreaming")
-                    extra = self.var_extra.get().strip()
-                    if extra:
-                        # разрезаем по пробелам без кавычек; если нужно — пользователь сам проставит кавычки
-                        cmd += extra.split()
+                           f"-LevelSequence=\"{t.sequence}\"", f"-MoviePipelineConfig=\"{t.preset}\"", "-log", "-notexturestreaming"]
                     self._log(f"[{idx}] Start (try {attempt}/{retries+1}): {' '.join(cmd)}")
 
                     # статус
                     if gi is not None:
                         self.state[gi]["start"] = time.time()
-                        self._set_status_async(gi, "Running 0%")
+                        self._set_status_async(gi, "Rendering 00:00")
                         self._current_global_idx = gi
 
                     try:
@@ -719,6 +734,19 @@ class MRQLauncher(tk.Tk):
                         self._log(f"[{idx}] Failed to start: {e}")
                         break
 
+                    # --- Обновление статуса таймером MM:SS каждую секунду
+                    def tick_elapsed(gidx: Optional[int]):
+                        try:
+                            while self.current_process and self.current_process.poll() is None:
+                                if gidx is not None and self.state[gidx]["start"]:
+                                    elapsed = int(time.time() - self.state[gidx]["start"])
+                                    m, s = divmod(elapsed, 60)
+                                    self._set_status_async(gidx, f"Rendering {m:02d}:{s:02d}")
+                                time.sleep(1.0)
+                        except Exception:
+                            pass
+
+                    # --- Перекачка stdout → лог (без попыток % прогресса)
                     def pump(proc: subprocess.Popen, gidx: Optional[int]):
                         try:
                             if proc.stdout:
@@ -727,11 +755,6 @@ class MRQLauncher(tk.Tk):
                                         break
                                     self._log(line.rstrip())
                                     log_fp.write(line)
-                                    # попытка вытащить прогресс
-                                    p = self._extract_progress(line)
-                                    if p is not None and gidx is not None:
-                                        self.state[gidx]["progress"] = p
-                                        self._set_status_async(gidx, f"Running {p}%")
                         except Exception as ex:
                             self._log(f"[pump] {ex}")
                         finally:
@@ -740,8 +763,10 @@ class MRQLauncher(tk.Tk):
                             except Exception:
                                 pass
 
-                    th = threading.Thread(target=pump, args=(self.current_process, gi), daemon=True)
-                    th.start()
+                    th_pump = threading.Thread(target=pump, args=(self.current_process, gi), daemon=True)
+                    th_pump.start()
+                    th_tick = threading.Thread(target=tick_elapsed, args=(gi,), daemon=True)
+                    th_tick.start()
                     rc = self.current_process.wait()
                     self._log(f"[{idx}] Exit code: {rc}")
                     self.current_process = None
@@ -787,8 +812,11 @@ class MRQLauncher(tk.Tk):
 
             self._log("== Queue complete ==")
             self._current_global_idx = None
+            self.worker_running = False
 
-        threading.Thread(target=worker, args=(tasks[:],), daemon=True).start()
+        # Если воркер еще не запущен — запускаем
+        if not self.worker_running:
+            threading.Thread(target=worker, daemon=True).start()
 
     def cancel_current(self):
         if self.current_process and self.current_process.poll() is None:
@@ -813,6 +841,27 @@ class MRQLauncher(tk.Tk):
         self.stop_all = True
         self.cancel_current()
         self._log("[Cancel] Stop-all requested.")
+
+    # Добавить новую задачу и сразу положить в runtime-очередь
+    def add_task_and_enqueue(self):
+        dlg = TaskEditor(self)
+        self.wait_window(dlg)
+        if not dlg.result:
+            return
+        t = dlg.result
+        self.settings.tasks.append(t)
+        self._ensure_state()
+        try:
+            gi = self.settings.tasks.index(t)
+            self._set_status_async(gi, "Queued")
+        except ValueError:
+            pass
+        self.refresh_tree()
+        self.runtime_q.put(t)
+        self._log("[+] Task added to running queue")
+        # Если очередь не была запущена — запустим воркер на одном элементе
+        if not self.worker_running:
+            self._run_queue([])  # запустит воркер без первичного списка
 
     # Logging & UI queues (потокобезопасно)
     def _log(self, msg: str):
