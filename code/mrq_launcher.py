@@ -17,7 +17,7 @@ from tkinter import ttk
 # -------------------------------------------------
 # App meta
 # -------------------------------------------------
-APP_VERSION = "1.2.7"
+APP_VERSION = "1.2.8"
 # -------------------------------------------------
 # Helpers
 # -------------------------------------------------
@@ -309,6 +309,13 @@ class MRQLauncher(tk.Tk):
         self.ctx_task.add_separator()
         self.ctx_task.add_command(label="Move Up", command=lambda: self.move_selected(-1))
         self.ctx_task.add_command(label="Move Down", command=lambda: self.move_selected(1))
+        # Duplicate Save/Load under context menu for quick access
+        self.ctx_task.add_separator()
+        self.ctx_task.add_command(label="Load Task(s)…", command=self.load_tasks_dialog)
+        self.ctx_task.add_command(label="Save Selected Task(s)…", command=self.save_selected_tasks_dialog)
+        self.ctx_task.add_separator()
+        self.ctx_task.add_command(label="Load Queue…", command=self.load_json_dialog)
+        self.ctx_task.add_command(label="Save Queue…", command=self.save_json_dialog)
         # Bind right-click (Button-3 on Windows/Linux; macOS users often use Ctrl-Click)
         self.tree.bind("<Button-3>", self._on_tree_right_click)
         self.tree.bind("<Control-Button-1>", self._on_tree_right_click)
@@ -350,12 +357,15 @@ class MRQLauncher(tk.Tk):
         tk.Button(grp_run, text="Cancel Current", width=20, command=self.cancel_current).pack(pady=2)
         tk.Button(grp_run, text="Cancel All", width=20, command=self.cancel_all).pack(pady=2)
 
-        # ---- Group: Logs ----
-        # Quick log buttons (remain under the table)
+        # ---- Group: Logs & Queue I/O (bottom bar under the table)
         logs_bar = tk.Frame(self, padx=10)
         logs_bar.pack(fill=tk.X, pady=(0, 4))
+        # left side — log helpers
         tk.Button(logs_bar, text="Open Logs Folder", command=self.open_logs_folder).pack(side=tk.LEFT, padx=(0,6))
         tk.Button(logs_bar, text="Open Last Log (Selected)", command=self.open_last_log_for_selected).pack(side=tk.LEFT)
+        # right side — queue I/O
+        tk.Button(logs_bar, text="Save Queue", command=self.save_json_dialog).pack(side=tk.RIGHT, padx=(6,0))
+        tk.Button(logs_bar, text="Load Queue", command=self.load_json_dialog).pack(side=tk.RIGHT, padx=(6,0))
 
         # ---- Fixed session total time row (just under the table area) ----
         # Sits above the log box.
@@ -722,10 +732,10 @@ class MRQLauncher(tk.Tk):
         if not ue_cmd or not os.path.exists(ue_cmd):
             messagebox.showerror("Error", "Specify a valid path to UnrealEditor-Cmd.exe")
             return
-        if not tasks:
+        if not tasks and self.runtime_q.empty():
             if not self.worker_running:
                 messagebox.showinfo("Info", "No tasks to run")
-                return
+            return
 
         self.stop_all = False
         # Preload tasks into runtime queue
@@ -744,6 +754,11 @@ class MRQLauncher(tk.Tk):
                 self._set_status_async(gi, "Queued")
             except ValueError:
                 pass
+
+        def _fmt_hhmmss(sec: int) -> str:
+            h, rem = divmod(max(0, int(sec)), 3600)
+            m, s = divmod(rem, 60)
+            return f"{h:02d}:{m:02d}:{s:02d}"
 
         def worker():
             self.worker_running = True
@@ -802,6 +817,7 @@ class MRQLauncher(tk.Tk):
                         cmd += shlex.split(extra)
                     self._log(f"[{idx}] Start (try {attempt}/{retries+1}): {' '.join(cmd)}")
 
+                    start_dt = datetime.now()
                     # status
                     if gi is not None:
                         self.state[gi]["start"] = time.time()
@@ -811,6 +827,7 @@ class MRQLauncher(tk.Tk):
                     try:
                         log_fp = open(logfile, "a", encoding="utf-8")
                         log_fp.write(f"CMD: {' '.join(cmd)}\n")
+                        log_fp.write(f"START: {start_dt.strftime('%Y-%m-%d %H:%M:%S')}\n")
                         self.current_process = subprocess.Popen(
                             cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
                         )
@@ -863,7 +880,9 @@ class MRQLauncher(tk.Tk):
                         pass
                     self.current_process = None
                     try:
-                        log_fp.write(f"\nEXIT: {rc}\n")
+                        end_dt = datetime.now()
+                        log_fp.write(f"END: {end_dt.strftime('%Y-%m-%d %H:%M:%S')}\n")
+                        log_fp.write(f"EXIT: {rc}\n")
                         log_fp.close()
                     except Exception:
                         pass
@@ -877,10 +896,15 @@ class MRQLauncher(tk.Tk):
                     if rc == 0:
                         if gi is not None:
                             if dur is not None:
-                                m, s = divmod(dur, 60)
-                                self._set_status_async(gi, f"Done ({m:02d}:{s:02d})")
+                                self._set_status_async(gi, f"Done ({_fmt_hhmmss(dur)[3:]})")
                             else:
                                 self._set_status_async(gi, "Done")
+                            # Log timing summary (also to UI log)
+                            if self.state[gi].get("start") and self.state[gi].get("end"):
+                                dur_txt = _fmt_hhmmss(int(self.state[gi]["end"] - self.state[gi]["start"]))
+                                start_txt = datetime.fromtimestamp(self.state[gi]["start"]).strftime("%Y-%m-%d %H:%M:%S")
+                                end_txt = datetime.fromtimestamp(self.state[gi]["end"]).strftime("%Y-%m-%d %H:%M:%S")
+                                self._log(f"[{idx}] Start: {start_txt} | End: {end_txt} | Duration: {dur_txt}")
                         break
                     else:
                         if policy == "stop_queue":
@@ -950,13 +974,12 @@ class MRQLauncher(tk.Tk):
         except ValueError:
             pass
         self.refresh_tree()
-        # If worker is already running — just push into runtime queue.
-        # If not — start worker by calling _run_queue([t]) (it enqueues and launches worker).
-        if self.worker_running:
-            self.runtime_q.put(t)
-            self._log("[+] Task added to running queue")
+        self.runtime_q.put(t)
+        # If the queue hasn't been started, launch the worker for a single item
+        if not self.worker_running:
+            self._run_queue([])  # starts the worker without an initial list
         else:
-            self._run_queue([t])
+            self._log("[+] Task added to running queue")
 
     # Logging & UI queues (thread-safe)
     def _log(self, msg: str):
