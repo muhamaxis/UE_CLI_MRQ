@@ -17,7 +17,7 @@ from tkinter import ttk
 # -------------------------------------------------
 # App meta
 # -------------------------------------------------
-APP_VERSION = "1.2.9"
+APP_VERSION = "1.3.0"
 # -------------------------------------------------
 # Helpers
 # -------------------------------------------------
@@ -319,6 +319,7 @@ class MRQLauncher(tk.Tk):
         self.ctx_task.add_separator()
         self.ctx_task.add_command(label="Load Queue…", command=self.load_json_dialog)
         self.ctx_task.add_command(label="Save Queue…", command=self.save_json_dialog)
+        self.ctx_task.add_command(label="Save Queue Log…", command=self.save_queue_log)
         # Bind right-click (Button-3 on Windows/Linux; macOS users often use Ctrl-Click)
         self.tree.bind("<Button-3>", self._on_tree_right_click)
         self.tree.bind("<Control-Button-1>", self._on_tree_right_click)
@@ -380,6 +381,7 @@ class MRQLauncher(tk.Tk):
         qbtns.pack(side=tk.RIGHT)
         tk.Button(qbtns, text="Load Queue", width=18, command=self.load_json_dialog).pack(side=tk.LEFT, padx=3)
         tk.Button(qbtns, text="Save Queue", width=18, command=self.save_json_dialog).pack(side=tk.LEFT, padx=3)
+        tk.Button(qbtns, text="Save Queue Log", width=18, command=self.save_queue_log).pack(side=tk.LEFT, padx=3)
 
         # ---- Fixed session total time row (just under the table area) ----
         # Sits above the log box.
@@ -715,6 +717,54 @@ class MRQLauncher(tk.Tk):
                 subprocess.Popen(["xdg-open", path])
         except Exception as e:
             self._log(f"[Logs] {e}")
+
+    # ---- Queue summary log -------------------------------------------------
+    def _queue_log_default_path(self) -> str:
+        """Default path for queue summary log."""
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        name = f"Queue_Log_{ts}.log"
+        folder = self._logs_dir()
+        os.makedirs(folder, exist_ok=True)
+        return os.path.join(folder, name)
+
+    def _format_hms(self, sec: Optional[int]) -> str:
+        if sec is None:
+            return ""
+        sec = max(0, int(sec))
+        h, rem = divmod(sec, 3600)
+        m, s = divmod(rem, 60)
+        return f"{h:02d}:{m:02d}:{s:02d}"
+
+    def _collect_queue_rows(self) -> List[str]:
+        """Build rows for the queue summary file."""
+        rows = []
+        # Header
+        header = "Level / Sequence / Preset / Start / End / Duration"
+        rows.append(header)
+        for i, t in enumerate(self.settings.tasks):
+            st = self.state[i] if i < len(self.state) else {}
+            start_ts = st.get("start")
+            end_ts = st.get("end")
+            start_str = datetime.fromtimestamp(start_ts).strftime("%Y-%m-%d %H:%M:%S") if start_ts else ""
+            end_str = datetime.fromtimestamp(end_ts).strftime("%Y-%m-%d %H:%M:%S") if end_ts else ""
+            dur = None
+            if start_ts and end_ts:
+                dur = int(end_ts - start_ts)
+            rows.append(
+                f"{soft_name(t.level)} / {soft_name(t.sequence)} / {soft_name(t.preset)} / {start_str} / {end_str} / {self._format_hms(dur)}"
+            )
+        return rows
+
+    def save_queue_log(self):
+        """Save a compact queue summary into mrq_logs/Queue_Log_*.log"""
+        try:
+            path = self._queue_log_default_path()
+            rows = self._collect_queue_rows()
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("\n".join(rows) + "\n")
+            self._log(f"[Logs] Queue summary saved: {os.path.basename(path)}")
+        except Exception as e:
+            self._log(f"[Logs] Failed to save queue log: {e}")
 
     def open_last_log_for_selected(self):
         sel = self._selected_indices()
