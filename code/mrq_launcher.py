@@ -17,7 +17,7 @@ from tkinter import ttk
 # -------------------------------------------------
 # App meta
 # -------------------------------------------------
-APP_VERSION = "1.2.8"
+APP_VERSION = "1.2.9"
 # -------------------------------------------------
 # Helpers
 # -------------------------------------------------
@@ -360,17 +360,26 @@ class MRQLauncher(tk.Tk):
         tk.Button(grp_run, text="Cancel Current", width=20, command=self.cancel_current).pack(pady=2)
         tk.Button(grp_run, text="Cancel All", width=20, command=self.cancel_all).pack(pady=2)
 
-        # ---- Group: Logs & Queue I/O (bottom bar under the table)
-        logs_bar = tk.Frame(self, padx=10)
-        logs_bar.pack(fill=tk.X, pady=(0, 4))
-        # left side — log helpers
+        # ---- Bottom bar: Logs (left) + Queue I/O (right within tasks area)
+        # We emulate the same split as above: left area under the tasks table,
+        # plus a fixed-width placeholder on the right (equal to sidebar width).
+        bottom_bar = tk.Frame(self, padx=10)
+        bottom_bar.pack(fill=tk.X, pady=(0, 4))
+        left_bottom = tk.Frame(bottom_bar)
+        left_bottom.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        right_placeholder = tk.Frame(bottom_bar, width=165)  # keep in sync with sidebar width
+        right_placeholder.pack(side=tk.RIGHT, fill=tk.Y)
+        right_placeholder.pack_propagate(False)
+        # Left: log helpers
+        logs_bar = tk.Frame(left_bottom)
+        logs_bar.pack(side=tk.LEFT)
         tk.Button(logs_bar, text="Open Logs Folder", command=self.open_logs_folder).pack(side=tk.LEFT, padx=(0,6))
         tk.Button(logs_bar, text="Open Last Log (Selected)", command=self.open_last_log_for_selected).pack(side=tk.LEFT)
-        # right side — queue I/O (stretch with tasks table width)
-        qbtns = tk.Frame(logs_bar)
-        qbtns.pack(side=tk.RIGHT, fill=tk.X, expand=True)
-        tk.Button(qbtns, text="Load Queue", command=self.load_json_dialog).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=3)
-        tk.Button(qbtns, text="Save Queue", command=self.save_json_dialog).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=3)
+        # Right inside the tasks width: two fixed-size buttons (~150px)
+        qbtns = tk.Frame(left_bottom)
+        qbtns.pack(side=tk.RIGHT)
+        tk.Button(qbtns, text="Load Queue", width=18, command=self.load_json_dialog).pack(side=tk.LEFT, padx=3)
+        tk.Button(qbtns, text="Save Queue", width=18, command=self.save_json_dialog).pack(side=tk.LEFT, padx=3)
 
         # ---- Fixed session total time row (just under the table area) ----
         # Sits above the log box.
