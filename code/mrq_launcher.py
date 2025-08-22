@@ -281,9 +281,11 @@ class MRQLauncher(tk.Tk):
         mid = ttk.Panedwindow(self, orient="horizontal")
         mid.pack(fill=tk.BOTH, expand=True, padx=10, pady=8)
         left_pane = tk.Frame(mid)
-        right_shell = tk.Frame(mid)  # will contain a Canvas with vertical scrollbar
+        # Selections / Render buttons (vertical right panel, fixed width 165px)
+        right_shell = tk.Frame(mid, width=165)  # will contain a Canvas with vertical scrollbar
         mid.add(left_pane, weight=4)
-        mid.add(right_shell, weight=1)
+        mid.add(right_shell, weight=0)
+        right_shell.pack_propagate(False)  # enforce fixed width
 
         cols = ("enabled", "level", "sequence", "preset", "status", "notes")
         self.tree = ttk.Treeview(left_pane, columns=cols, show="headings", selectmode="extended")
@@ -309,8 +311,9 @@ class MRQLauncher(tk.Tk):
         self.ctx_task.add_separator()
         self.ctx_task.add_command(label="Move Up", command=lambda: self.move_selected(-1))
         self.ctx_task.add_command(label="Move Down", command=lambda: self.move_selected(1))
-        # Duplicate Save/Load under context menu for quick access
+        # Duplicate Save/Load under context menu (renamed section)
         self.ctx_task.add_separator()
+        self.ctx_task.add_command(label="Task Save/Load", state="disabled")  # section header
         self.ctx_task.add_command(label="Load Task(s)…", command=self.load_tasks_dialog)
         self.ctx_task.add_command(label="Save Selected Task(s)…", command=self.save_selected_tasks_dialog)
         self.ctx_task.add_separator()
@@ -363,9 +366,11 @@ class MRQLauncher(tk.Tk):
         # left side — log helpers
         tk.Button(logs_bar, text="Open Logs Folder", command=self.open_logs_folder).pack(side=tk.LEFT, padx=(0,6))
         tk.Button(logs_bar, text="Open Last Log (Selected)", command=self.open_last_log_for_selected).pack(side=tk.LEFT)
-        # right side — queue I/O
-        tk.Button(logs_bar, text="Save Queue", command=self.save_json_dialog).pack(side=tk.RIGHT, padx=(6,0))
-        tk.Button(logs_bar, text="Load Queue", command=self.load_json_dialog).pack(side=tk.RIGHT, padx=(6,0))
+        # right side — queue I/O (stretch with tasks table width)
+        qbtns = tk.Frame(logs_bar)
+        qbtns.pack(side=tk.RIGHT, fill=tk.X, expand=True)
+        tk.Button(qbtns, text="Load Queue", command=self.load_json_dialog).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=3)
+        tk.Button(qbtns, text="Save Queue", command=self.save_json_dialog).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=3)
 
         # ---- Fixed session total time row (just under the table area) ----
         # Sits above the log box.
