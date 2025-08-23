@@ -17,7 +17,7 @@ from tkinter import ttk
 # -------------------------------------------------
 # App meta
 # -------------------------------------------------
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.3.1"
 # -------------------------------------------------
 # Helpers
 # -------------------------------------------------
@@ -226,10 +226,12 @@ class MRQLauncher(tk.Tk):
         menubar.add_cascade(label="Selections", menu=m_sel)
         # Render
         m_run = tk.Menu(menubar, tearoff=0)
+        m_run.add_command(label="Render All", command=self.run_all)
         m_run.add_command(label="Render Selected", command=self.run_selected)
         m_run.add_command(label="Render Checked", command=self.run_enabled)
-        m_run.add_command(label="Add Task(s) to Queue", command=self.add_task_and_enqueue)
+        m_run.add_command(label="Add Task(s) to Queue", command=self.enqueue_selected_or_enabled)
         m_run.add_separator()
+        m_run.add_command(label="Clear Status", command=self.clear_status_selected)
         m_run.add_command(label="Cancel Current", command=self.cancel_current)
         m_run.add_command(label="Cancel All", command=self.cancel_all)
         menubar.add_cascade(label="Render", menu=m_run)
@@ -320,6 +322,8 @@ class MRQLauncher(tk.Tk):
         self.ctx_task.add_command(label="Load Queue…", command=self.load_json_dialog)
         self.ctx_task.add_command(label="Save Queue…", command=self.save_json_dialog)
         self.ctx_task.add_command(label="Save Queue Log…", command=self.save_queue_log)
+        self.ctx_task.add_separator()
+        self.ctx_task.add_command(label="Clear Status", command=self.clear_status_selected)
         # Bind right-click (Button-3 on Windows/Linux; macOS users often use Ctrl-Click)
         self.tree.bind("<Button-3>", self._on_tree_right_click)
         self.tree.bind("<Control-Button-1>", self._on_tree_right_click)
@@ -355,9 +359,11 @@ class MRQLauncher(tk.Tk):
         # Render group (vertical buttons)
         grp_run = ttk.LabelFrame(right_frame, text="Render")
         grp_run.pack(fill=tk.X, pady=6)
+        tk.Button(grp_run, text="Render All", width=20, command=self.run_all).pack(pady=2)
         tk.Button(grp_run, text="Render Selected", width=20, command=self.run_selected).pack(pady=2)
         tk.Button(grp_run, text="Render Checked", width=20, command=self.run_enabled).pack(pady=2)
-        tk.Button(grp_run, text="Add Task(s) to Queue", width=20, command=self.add_task_and_enqueue).pack(pady=2)
+        tk.Button(grp_run, text="Add Task(s) to Queue", width=20, command=self.enqueue_selected_or_enabled).pack(pady=2)
+        tk.Button(grp_run, text="Clear Status", width=20, command=self.clear_status_selected).pack(pady=2)
         tk.Button(grp_run, text="Cancel Current", width=20, command=self.cancel_current).pack(pady=2)
         tk.Button(grp_run, text="Cancel All", width=20, command=self.cancel_all).pack(pady=2)
 
@@ -687,13 +693,33 @@ class MRQLauncher(tk.Tk):
         return items
 
     def run_all(self):
-        self._run_queue(self._collect())
+        tasks = self._collect()
+        # If already running, just enqueue
+        if self.worker_running or (self.current_process and self.current_process.poll() is None):
+            self._enqueue_tasks(tasks)
+            return
+        self._run_queue(tasks)
 
     def run_selected(self):
-        self._run_queue(self._collect(only_selected=True))
+        tasks = self._collect(only_selected=True)
+        if not tasks:
+            messagebox.showinfo("Info", "Select at least one task in the table.")
+            return
+        if self.worker_running or (self.current_process and self.current_process.poll() is None):
+            # Prevent spawning another render process; enqueue instead
+            self._enqueue_tasks(tasks)
+            return
+        self._run_queue(tasks)
 
     def run_enabled(self):
-        self._run_queue(self._collect(only_enabled=True))
+        tasks = self._collect(only_enabled=True)
+        if not tasks:
+            messagebox.showinfo("Info", "No enabled tasks to run.")
+            return
+        if self.worker_running or (self.current_process and self.current_process.poll() is None):
+            self._enqueue_tasks(tasks)
+            return
+        self._run_queue(tasks)
 
     def _task_logfile(self, task: RenderTask) -> str:
         base = f"{soft_name(task.level)}__{soft_name(task.sequence)}__{soft_name(task.preset)}"
@@ -802,22 +828,14 @@ class MRQLauncher(tk.Tk):
             return
 
         self.stop_all = False
-        # Preload tasks into runtime queue
-        for t in tasks:
-            self.runtime_q.put(t)
+        # Preload tasks into runtime queue via helper (sets statuses too)
         if tasks:
-            self._log(f"== Enqueued {len(tasks)} task(s) ==")
+            self._enqueue_tasks(tasks, log_prefix="== Enqueued ")
         retries = int(self.var_retries.get())
         policy = self.var_policy.get()
         kill_timeout = int(self.var_kill_timeout.get())
 
-        # Mark tasks as Queued (only newly added ones)
-        for t in tasks:
-            try:
-                gi = self.settings.tasks.index(t)
-                self._set_status_async(gi, "Queued")
-            except ValueError:
-                pass
+        # (handled inside _enqueue_tasks)
 
         def _fmt_hhmmss(sec: int) -> str:
             h, rem = divmod(max(0, int(sec)), 3600)
@@ -1022,28 +1040,44 @@ class MRQLauncher(tk.Tk):
         self.cancel_current()
         self._log("[Cancel] Stop-all requested.")
 
-    def add_task_and_enqueue(self):
-        """Create a new task and enqueue it into the running queue without stopping the worker."""
-        dlg = TaskEditor(self)
-        self.wait_window(dlg)
-        if not dlg.result:
+    def _enqueue_tasks(self, tasks: List[RenderTask], mark_queued: bool = True, log_prefix: str = "[+] Added "):
+        """Enqueue a list of tasks into the runtime queue and optionally mark them as Queued."""
+        if not tasks:
             return
-        t = dlg.result
-        # Add to app list and UI
-        self.settings.tasks.append(t)
-        self._ensure_state()
-        try:
-            gi = self.settings.tasks.index(t)
-            self._set_status_async(gi, "Queued")
-        except ValueError:
-            pass
-        self.refresh_tree()
-        self.runtime_q.put(t)
-        # If the queue hasn't been started, launch the worker for a single item
+        count = 0
+        for t in tasks:
+            # Skip incomplete tasks defensively
+            if not all([t.uproject, t.level, t.sequence, t.preset]):
+                continue
+            self.runtime_q.put(t)
+            if mark_queued:
+                try:
+                    gi = self.settings.tasks.index(t)
+                    self._set_status_async(gi, "Queued")
+                except ValueError:
+                    pass
+            count += 1
+        if count:
+            self._log(f"{log_prefix}{count} task(s) to queue")
+            # Ensure table reflects status changes
+            self.refresh_tree()
+
+    def enqueue_selected_or_enabled(self):
+        """
+        Add Task(s) to Queue:
+        - If selection exists: enqueue selected tasks.
+        - Else: enqueue all enabled tasks.
+        If no worker is running, start the queue worker.
+        """
+        sel = self._collect(only_selected=True)
+        tasks = sel if sel else self._collect(only_enabled=True)
+        if not tasks:
+            messagebox.showinfo("Info", "Nothing to enqueue: select tasks or enable some tasks.")
+            return
+        self._enqueue_tasks(tasks)
         if not self.worker_running:
-            self._run_queue([])  # starts the worker without an initial list
-        else:
-            self._log("[+] Task added to running queue")
+            # Start worker without adding new items (they're already in runtime_q)
+            self._run_queue([])
 
     # Logging & UI queues (thread-safe)
     def _log(self, msg: str):
@@ -1113,6 +1147,23 @@ class MRQLauncher(tk.Tk):
         finally:
             # Re-schedule periodic update
             self.after(500, self._tick_session_total)
+
+    # ---- Status maintenance helpers ----
+    def clear_status_selected(self):
+        """
+        Clear Status: reset status/progress/timestamps for selected tasks.
+        Useful before re-rendering.
+        """
+        sel = self._selected_indices()
+        if not sel:
+            messagebox.showinfo("Clear Status", "Select at least one task to clear its status.")
+            return
+        self._ensure_state()
+        for idx in sel:
+            if 0 <= idx < len(self.state):
+                self.state[idx] = {"status": "—", "progress": None, "start": None, "end": None}
+                self._update_row_async(idx)
+        self._log(f"[Status] Cleared status for {len(sel)} task(s).")
 
 # -------------------------------------------------
 # Entrypoint
