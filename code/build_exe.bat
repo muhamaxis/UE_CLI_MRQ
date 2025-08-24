@@ -22,13 +22,13 @@ echo [i] Upgrading pip...
 python -m pip install --upgrade pip wheel setuptools >NUL
 
 echo [i] Installing PyInstaller...
-REM Для Python 3.12+ ставим актуальный PyInstaller
+REM For Python 3.12+ install latest PyInstaller
 python -m pip install "pyinstaller>=6.4" >NUL || goto :fail
 
 echo [i] Python version check:
 python --version
 
-echo [i] Building (onedir сначала, это надежнее)...
+echo [i] Building (onedir first, it's more reliable)...
 set LOG=build_log.txt
 del /q "%LOG%" 2>nul
 
@@ -54,7 +54,7 @@ if errorlevel 1 (
 
 echo [i] Build OK. Check dist\%NAME%\
 
-echo [i] Теперь собираем onefile (если нужно)...
+echo [i] Now building onefile (if needed)...
 pyinstaller ^
   "%MAIN%" ^
   --name "%NAME%" ^
@@ -70,7 +70,7 @@ pyinstaller ^
   >> "%LOG%" 2>&1
 
 if errorlevel 1 (
-  echo [!] Onefile failed. OneDir готов к использованию. См. %LOG%
+  echo [!] Onefile failed. OneDir is ready to use. See %LOG%
   goto :done
 )
 
@@ -80,7 +80,7 @@ goto :done
 :fail
 echo.
 echo [X] Build failed. Full log saved to %LOG%
-echo     Пожалуйста, пришли последние ~50 строк %LOG% (или файл целиком).
+echo     Please send the last ~50 lines of %LOG% (or the whole file).
 exit /b 1
 
 :done
