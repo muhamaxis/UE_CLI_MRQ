@@ -1,1 +1,5 @@
 /code/mrq_logs
+/code/build
+/code/dist
+code/build_log.txt
+code/MRQLauncherCLI.spec
