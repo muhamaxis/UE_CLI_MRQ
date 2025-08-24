@@ -31,10 +31,20 @@ python --version
 echo [i] Building (onedir first, it's more reliable)...
 set LOG=build_log.txt
 del /q "%LOG%" 2>nul
-set "PYI_BASE=pyinstaller \"%MAIN%\" --name \"%NAME%\" --noconfirm --clean --log-level DEBUG --noconsole"
-set "PYI_TK=--collect-submodules tkinter --collect-submodules tkinter.ttk --collect-submodules tkinter.filedialog --collect-submodules tkinter.messagebox"
 
-%PYI_BASE% %PYI_TK% --onedir > "%LOG%" 2>&1
+pyinstaller ^
+  "%MAIN%" ^
+  --name "%NAME%" ^
+  --onedir ^
+  --noconfirm ^
+  --clean ^
+  --log-level DEBUG ^
+  --noconsole ^
+  --collect-submodules tkinter ^
+  --collect-submodules tkinter.ttk ^
+  --collect-submodules tkinter.filedialog ^
+  --collect-submodules tkinter.messagebox ^
+  > "%LOG%" 2>&1
 
 if errorlevel 1 (
   echo [!] Build failed. See %LOG%
@@ -45,7 +55,19 @@ if errorlevel 1 (
 echo [i] Build OK. Check dist\%NAME%\
 
 echo [i] Now building onefile (if needed)...
-%PYI_BASE% %PYI_TK% --onefile >> "%LOG%" 2>&1
+pyinstaller ^
+  "%MAIN%" ^
+  --name "%NAME%" ^
+  --onefile ^
+  --noconfirm ^
+  --clean ^
+  --log-level DEBUG ^
+  --noconsole ^
+  --collect-submodules tkinter ^
+  --collect-submodules tkinter.ttk ^
+  --collect-submodules tkinter.filedialog ^
+  --collect-submodules tkinter.messagebox ^
+  >> "%LOG%" 2>&1
 
 if errorlevel 1 (
   echo [!] Onefile failed. OneDir is ready to use. See %LOG%
