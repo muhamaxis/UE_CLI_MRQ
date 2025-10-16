@@ -17,7 +17,7 @@ from tkinter import ttk
 # -------------------------------------------------
 # App meta
 # -------------------------------------------------
-APP_VERSION = "1.3.1"
+APP_VERSION = "1.3.2"
 # -------------------------------------------------
 # Helpers
 # -------------------------------------------------
@@ -219,6 +219,7 @@ class MRQLauncher(tk.Tk):
         m_sel.add_command(label="Enable All Tasks", command=lambda: self.set_enabled_all(True))
         m_sel.add_command(label="Disable All Tasks", command=lambda: self.set_enabled_all(False))
         m_sel.add_command(label="Remove Task(s)", command=self.remove_task)
+        m_sel.add_command(label="Remove Unchecked Tasks", command=self.remove_unchecked_tasks)
         m_sel.add_command(label="Toggle Selection", command=self.toggle_selected)
         m_sel.add_separator()
         m_sel.add_command(label="Move Up", command=lambda: self.move_selected(-1))
@@ -352,6 +353,7 @@ class MRQLauncher(tk.Tk):
         tk.Button(grp_sel, text="Enable All Tasks", width=20, command=lambda: self.set_enabled_all(True)).pack(pady=2)
         tk.Button(grp_sel, text="Disable All Tasks", width=20, command=lambda: self.set_enabled_all(False)).pack(pady=2)
         tk.Button(grp_sel, text="Remove Task(s)", width=20, command=self.remove_task).pack(pady=2)
+        tk.Button(grp_sel, text="Remove Unchecked Tasks", width=20, command=self.remove_unchecked_tasks).pack(pady=2)
         tk.Button(grp_sel, text="Toggle Selection", width=20, command=self.toggle_selected).pack(pady=2)
         tk.Button(grp_sel, text="Move Up", width=20, command=lambda: self.move_selected(-1)).pack(pady=2)
         tk.Button(grp_sel, text="Move Down", width=20, command=lambda: self.move_selected(1)).pack(pady=2)
@@ -518,6 +520,23 @@ class MRQLauncher(tk.Tk):
             del self.settings.tasks[idx]
             del self.state[idx]
         self.refresh_tree()
+
+    def remove_unchecked_tasks(self):
+        """Remove all tasks that are not checked (enabled == False)."""
+        removed = 0
+        new_tasks = []
+        new_state = []
+        for i, t in enumerate(self.settings.tasks):
+            if t.enabled:
+                new_tasks.append(t)
+                if i < len(self.state):
+                    new_state.append(self.state[i])
+            else:
+                removed += 1
+        self.settings.tasks = new_tasks
+        self.state = new_state
+        self.refresh_tree()
+        self._log(f"[Tasks] Removed {removed} unchecked task(s).")
 
     def set_enabled_all(self, val: bool):
         for t in self.settings.tasks:
