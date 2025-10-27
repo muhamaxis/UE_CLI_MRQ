@@ -17,7 +17,7 @@ from tkinter import ttk
 # -------------------------------------------------
 # App meta
 # -------------------------------------------------
-APP_VERSION = "1.3.2"
+APP_VERSION = "1.4.0"
 # -------------------------------------------------
 # Helpers
 # -------------------------------------------------
@@ -72,6 +72,7 @@ class RenderTask:
     level: str = ""
     sequence: str = ""
     preset: str = ""
+    output_dir: str = ""  # Optional override for output directory
     notes: str = ""
     enabled: bool = True
 
@@ -105,12 +106,14 @@ class TaskEditor(tk.Toplevel):
         self.var_level = StringVar(value=(task.level if task else ""))
         self.var_seq = StringVar(value=(task.sequence if task else ""))
         self.var_preset = StringVar(value=(task.preset if task else ""))
+        self.var_output_dir = StringVar(value=(task.output_dir if task else ""))
         self.var_notes = StringVar(value=(task.notes if task else ""))
 
         frm = tk.Frame(self, padx=10, pady=10)
         frm.pack(fill=tk.BOTH, expand=True)
 
         def row(lbl, var, browse_cb=None, hint: str = ""):
+            # Generic row builder for labeled entry with optional Browse and hint
             r = tk.Frame(frm)
             r.pack(fill="x", pady=3)
             tk.Label(r, text=lbl, width=20, anchor="w").pack(side=tk.LEFT)
@@ -149,10 +152,22 @@ class TaskEditor(tk.Toplevel):
                 except Exception as e:
                     messagebox.showerror("Preset error", str(e))
 
+        def pick_output_dir():
+            p = filedialog.askdirectory(title="Select Output Directory")
+            if p:
+                # Normalize to use forward slashes so UE CLI handles it consistently
+                self.var_output_dir.set(p.replace("\\", "/"))
+
         row("Project (.uproject)", self.var_uproj, pick_uproj)
         row("Map (SoftObjectPath)", self.var_level, pick_level, "e.g.: /Game/Maps/MyMap.MyMap")
         row("Level Sequence", self.var_seq, pick_seq, "e.g.: /Game/Cinematics/Shot.Shot")
         row("MRQ Preset", self.var_preset, pick_preset, "e.g.: /Game/Cinematics/MoviePipeline/Presets/High.High")
+        row(
+            "Output Directory",
+            self.var_output_dir,
+            pick_output_dir,
+            "Optional. If empty, the path from MRQ Preset will be used."
+        )
 
         tk.Label(frm, text="Notes").pack(anchor="w")
         tk.Entry(frm, textvariable=self.var_notes, width=95).pack(fill="x")
@@ -168,6 +183,7 @@ class TaskEditor(tk.Toplevel):
             level=self.var_level.get().strip(),
             sequence=self.var_seq.get().strip(),
             preset=self.var_preset.get().strip(),
+            output_dir=self.var_output_dir.get().strip(),
             notes=self.var_notes.get().strip(),
             enabled=True,
         )
@@ -916,6 +932,10 @@ class MRQLauncher(tk.Tk):
                     extra = (self.var_extra.get() or "").strip()
                     if extra:
                         cmd += shlex.split(extra)
+                    # Per-task output directory override:
+                    # If set, it will override the destination defined in the MRQ Preset.
+                    if t.output_dir:
+                        cmd.append(f'-OutputDirectory="{t.output_dir}"')
                     self._log(f"[{idx}] Start (try {attempt}/{retries+1}): {' '.join(cmd)}")
 
                     start_dt = datetime.now()
