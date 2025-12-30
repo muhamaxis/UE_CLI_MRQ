@@ -17,7 +17,7 @@ from tkinter import ttk
 # -------------------------------------------------
 # App meta
 # -------------------------------------------------
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.4.1"
 # -------------------------------------------------
 # Helpers
 # -------------------------------------------------
@@ -942,7 +942,7 @@ class MRQLauncher(tk.Tk):
                     # status
                     if gi is not None:
                         self.state[gi]["start"] = time.time()
-                        self._set_status_async(gi, "Rendering 00:00")
+                        self._set_status_async(gi, "Rendering 00:00:00")
                         self._current_global_idx = gi
 
                     try:
@@ -964,8 +964,9 @@ class MRQLauncher(tk.Tk):
                             while proc and proc.poll() is None and not self.stop_all:
                                 if gidx is not None and self.state[gidx]["start"]:
                                     elapsed = int(time.time() - self.state[gidx]["start"])
-                                    m, s = divmod(elapsed, 60)
-                                    self._set_status_async(gidx, f"Rendering {m:02d}:{s:02d}")
+                                    h, rem = divmod(elapsed, 3600)
+                                    m, s = divmod(rem, 60)
+                                    self._set_status_async(gidx, f"Rendering {h:02d}:{m:02d}:{s:02d}")
                                 time.sleep(1.0)
                         except Exception:
                             pass
@@ -1017,7 +1018,7 @@ class MRQLauncher(tk.Tk):
                     if rc == 0:
                         if gi is not None:
                             if dur is not None:
-                                self._set_status_async(gi, f"Done ({_fmt_hhmmss(dur)[3:]})")
+                                self._set_status_async(gi, f"Done ({_fmt_hhmmss(dur)})")
                             else:
                                 self._set_status_async(gi, "Done")
                             # Log timing summary (also to UI log)
