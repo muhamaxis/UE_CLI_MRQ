@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.6.3"
+APP_VERSION = "1.6.5"
 
 UI_THEME = {
     "bg": "#111318",
@@ -1035,6 +1035,9 @@ class MRQLauncher(tk.Tk):
     def _get_active_tree_columns(self):
         return self.minimal_tree_columns if self.minimal_mode else self.full_tree_columns
 
+    def _visible_tree_columns(self):
+        return self._get_active_tree_columns()
+
     def _set_tree_display_columns(self):
         self.tree.configure(displaycolumns=self._get_active_tree_columns())
 
@@ -1070,7 +1073,7 @@ class MRQLauncher(tk.Tk):
             self.tree.column(name, width=width, anchor="w", stretch=False)
 
     def _compute_minimal_width(self) -> int:
-        active_columns = self._get_active_tree_columns()
+        active_columns = self._visible_tree_columns()
         total_width = sum(int(float(self.tree.column(name, "width"))) for name in active_columns)
         total_width += self._s(56)
 
@@ -1186,14 +1189,19 @@ class MRQLauncher(tk.Tk):
     def _refresh_status_pills(self):
         if not hasattr(self, "tree") or self.tree is None:
             return
-        self._clear_status_pills()
+
+        visible_ids = set()
         children = self.tree.get_children()
         if not children:
+            self._clear_status_pills()
             return
+
         for iid in children:
             bbox = self.tree.bbox(iid, "status")
             if not bbox:
                 continue
+
+            visible_ids.add(iid)
             x, y, w, h = bbox
             idx = int(iid)
             task = self.settings.tasks[idx]
@@ -1207,17 +1215,25 @@ class MRQLauncher(tk.Tk):
             pill_y = y + max(1, (h - pill_h) // 2)
             pill_x = x + self._s(10)
 
-            pill = tk.Canvas(
-                self.tree,
-                width=pill_w,
-                height=pill_h,
-                bg=UI_THEME["panel"],
-                highlightthickness=0,
-                bd=0,
-                relief=tk.FLAT,
-                takefocus=0,
-            )
-            pill.place(x=pill_x, y=pill_y)
+            pill = self.status_pill_widgets.get(iid)
+            if pill is None or not pill.winfo_exists():
+                pill = tk.Canvas(
+                    self.tree,
+                    width=pill_w,
+                    height=pill_h,
+                    bg=UI_THEME["panel"],
+                    highlightthickness=0,
+                    bd=0,
+                    relief=tk.FLAT,
+                    takefocus=0,
+                )
+                pill.bind("<Button-1>", lambda e, item=iid: self._select_tree_item(item))
+                pill.bind("<Double-Button-1>", lambda e, item=iid: self._toggle_tree_item_ready_disabled(item))
+                self.status_pill_widgets[iid] = pill
+
+            pill.place(x=pill_x, y=pill_y, width=pill_w, height=pill_h)
+            pill.configure(bg=UI_THEME["panel"])
+            pill.delete("all")
             self._round_rect(
                 pill,
                 1,
@@ -1236,9 +1252,14 @@ class MRQLauncher(tk.Tk):
                 fill=palette["text"],
                 font=("Segoe UI", max(8, self._s(8)), "bold"),
             )
-            pill.bind("<Button-1>", lambda e, item=iid: self._select_tree_item(item))
-            pill.bind("<Double-Button-1>", lambda e, item=iid: self._toggle_tree_item_ready_disabled(item))
-            self.status_pill_widgets[iid] = pill
+
+        stale_ids = [iid for iid in self.status_pill_widgets.keys() if iid not in visible_ids]
+        for iid in stale_ids:
+            try:
+                self.status_pill_widgets[iid].destroy()
+            except Exception:
+                pass
+            self.status_pill_widgets.pop(iid, None)
 
     def _select_tree_item(self, iid: str):
         try:
@@ -1536,6 +1557,8 @@ class MRQLauncher(tk.Tk):
 
         query = self.var_task_filter.get().strip().lower() if hasattr(self, "var_task_filter") else ""
         for i, task in enumerate(self.settings.tasks):
+            if self.minimal_mode and not task.enabled:
+                continue
             haystack = " ".join([
                 task.uproject,
                 task.level,
