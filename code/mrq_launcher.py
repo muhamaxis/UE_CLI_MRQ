@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.6.8"
+APP_VERSION = "1.6.9"
 
 UI_THEME = {
     "bg": "#111318",
@@ -401,6 +401,7 @@ class MRQLauncher(tk.Tk):
         self.command_preview: Optional[tk.Text] = None
         self.inspector_vars = {}
         self.status_pill_widgets = {}
+        self._empty_menu = tk.Menu(self, tearoff=0)
         self._build_ui()
         self.after(50, self._drain_queues)
         # Periodic update for the session total time label
@@ -1114,61 +1115,111 @@ class MRQLauncher(tk.Tk):
         return f"{self._compute_minimal_width()}x{self._compute_minimal_height()}"
 
     def _fit_minimal_width_only(self):
-        if not self.minimal_mode:
+        if not self.minimal_mode or not self.winfo_exists():
             return
-        self.update_idletasks()
         target_width = self._compute_minimal_width()
         current_height = max(self.winfo_height(), self.minimal_mode_minsize[1])
         self.geometry(f"{target_width}x{current_height}")
 
+    def _hide_widget(self, widget):
+        if widget is None:
+            return
+        try:
+            if widget.winfo_manager() == "pack":
+                widget.pack_forget()
+        except Exception:
+            pass
+
+    def _show_widget(self, widget, **pack_kwargs):
+        if widget is None:
+            return
+        try:
+            if widget.winfo_manager() != "pack":
+                widget.pack(**pack_kwargs)
+        except Exception:
+            pass
+
+    def _apply_minimal_layout(self):
+        self.config(menu=self._empty_menu)
+        self._hide_widget(self.header_panel)
+        self._hide_widget(self.bottom_panel)
+        self._hide_widget(self.status_bar)
+
+        self._hide_widget(self.queue_section_header)
+        self._hide_widget(self.queue_toolbar)
+        self._hide_widget(self.queue_hint_frame)
+        self._hide_widget(self.queue_stats_frame)
+        self._hide_widget(self.queue_hscroll)
+
+        self._show_widget(self.minimal_header, fill=tk.X, pady=(0, 10), before=self.tree_shell)
+        self._show_widget(self.minimal_footer, fill=tk.X, pady=(10, 0), after=self.tree_shell)
+
+    def _apply_full_layout(self):
+        self.config(menu=self.menubar)
+        self._hide_widget(self.minimal_header)
+        self._hide_widget(self.minimal_footer)
+
+        self._show_widget(self.header_panel, fill=tk.X, padx=self._s(12), pady=(self._s(12), self._s(8)), before=self.body)
+        self._show_widget(self.bottom_panel, fill=tk.BOTH, expand=False, pady=(self._s(8), 0), after=self.upper_body)
+        self._show_widget(self.status_bar, fill=tk.X, padx=self._s(12), pady=(0, self._s(12)), after=self.body)
+
+        self._show_widget(self.queue_section_header, fill=tk.X, pady=(0, 10), before=self.tree_shell)
+        self._show_widget(self.queue_toolbar, fill=tk.X, pady=(0, 10), before=self.tree_shell)
+        self._show_widget(self.queue_hint_frame, fill=tk.X, pady=(0, 10), before=self.tree_shell)
+        self._show_widget(self.queue_stats_frame, fill=tk.X, pady=(0, 10), before=self.tree_shell)
+        self._show_widget(self.queue_hscroll, fill=tk.X, pady=(8, 0), after=self.tree_shell)
+
     def enter_minimal_mode(self):
         if self.minimal_mode:
             return
+        previous_geometry = self.geometry()
         self.minimal_mode = True
-        self._full_mode_geometry = self.geometry()
-
-        self.config(menu="")
-        self.header_panel.pack_forget()
-        self.bottom_panel.pack_forget()
-        self.status_bar.pack_forget()
-
-        self.queue_section_header.pack_forget()
-        self.queue_toolbar.pack_forget()
-        self.queue_stats_frame.pack_forget()
-        self.queue_hscroll.pack_forget()
-
-        self.minimal_header.pack(fill=tk.X, pady=(0, 10), before=self.tree_shell)
-        self.minimal_footer.pack(fill=tk.X, pady=(10, 0))
-
-        self.minsize(*self.minimal_mode_minsize)
-        self.refresh_tree()
-        self.update_idletasks()
-        self.geometry(self._compute_minimal_geometry())
-        self._queue_tree_refresh()
+        self._full_mode_geometry = previous_geometry
+        try:
+            self._clear_status_pills()
+            self._apply_minimal_layout()
+            self.minsize(*self.minimal_mode_minsize)
+            self.refresh_tree()
+            self.update_idletasks()
+            self.geometry(self._compute_minimal_geometry())
+            self._queue_tree_refresh()
+        except Exception as e:
+            self._log(f"[UI] Minimal Mode failed: {e}")
+            self.minimal_mode = False
+            try:
+                self._apply_full_layout()
+                self.minsize(*self.full_mode_minsize)
+                self.refresh_tree()
+                if previous_geometry:
+                    self.geometry(previous_geometry)
+                self._queue_tree_refresh()
+            except Exception as restore_error:
+                self._log(f"[UI] Layout restore failed: {restore_error}")
 
     def exit_minimal_mode(self):
         if not self.minimal_mode:
             return
         self.minimal_mode = False
-
-        self.config(menu=self.menubar)
-        self.minimal_header.pack_forget()
-        self.minimal_footer.pack_forget()
-
-        self.header_panel.pack(fill=tk.X, padx=self._s(12), pady=(self._s(12), self._s(8)), before=self.body)
-        self.bottom_panel.pack(fill=tk.BOTH, expand=False, pady=(self._s(8), 0), after=self.upper_body)
-        self.status_bar.pack(fill=tk.X, padx=self._s(12), pady=(0, self._s(12)), after=self.body)
-
-        self.queue_section_header.pack(fill=tk.X, pady=(0, 10), before=self.tree_shell)
-        self.queue_toolbar.pack(fill=tk.X, pady=(0, 10), before=self.tree_shell)
-        self.queue_stats_frame.pack(fill=tk.X, pady=(0, 10), before=self.tree_shell)
-        self.queue_hscroll.pack(fill=tk.X, pady=(8, 0), after=self.tree_shell)
-
-        self.minsize(*self.full_mode_minsize)
-        self.refresh_tree()
-        if self._full_mode_geometry:
-            self.geometry(self._full_mode_geometry)
-        self._queue_tree_refresh()
+        previous_geometry = self._full_mode_geometry
+        try:
+            self._clear_status_pills()
+            self._apply_full_layout()
+            self.minsize(*self.full_mode_minsize)
+            self.refresh_tree()
+            if previous_geometry:
+                self.geometry(previous_geometry)
+            self._queue_tree_refresh()
+        except Exception as e:
+            self._log(f"[UI] Exit Minimal Mode failed: {e}")
+            self.minimal_mode = True
+            try:
+                self._apply_minimal_layout()
+                self.minsize(*self.minimal_mode_minsize)
+                self.refresh_tree()
+                self.geometry(self._compute_minimal_geometry())
+                self._queue_tree_refresh()
+            except Exception as restore_error:
+                self._log(f"[UI] Minimal layout restore failed: {restore_error}")
 
     def toggle_minimal_mode(self):
         if self.minimal_mode:
