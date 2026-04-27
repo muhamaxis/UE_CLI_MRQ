@@ -17,7 +17,7 @@ from tkinter import ttk
 # -------------------------------------------------
 # App meta
 # -------------------------------------------------
-APP_VERSION = "1.4.5"
+APP_VERSION = "1.4.6"
 # -------------------------------------------------
 # Helpers
 # -------------------------------------------------
@@ -523,10 +523,14 @@ class MRQLauncher(tk.Tk):
         if not sel:
             return
         idx = sel[0]
+        old_task = self.settings.tasks[idx]
         dlg = TaskEditor(self, self.settings.tasks[idx])
         self.wait_window(dlg)
         if dlg.result:
             dlg.result.enabled = self.settings.tasks[idx].enabled
+            # If this task was already queued, remove pending old copies first.
+            # Otherwise edited tasks can still run with stale parameters.
+            self._remove_tasks_from_runtime_queue([old_task])
             self.settings.tasks[idx] = dlg.result
             self.refresh_tree()
 
@@ -1165,7 +1169,7 @@ class MRQLauncher(tk.Tk):
     def _remove_tasks_from_runtime_queue(self, tasks_to_remove: List[RenderTask]):
         """
         Remove specific task objects from the runtime queue by identity.
-        Used when tasks are deleted from the table while queue items already exist.
+        Used to keep pending runtime queue items aligned with table edits.
         """
         if not tasks_to_remove:
             return
@@ -1186,7 +1190,7 @@ class MRQLauncher(tk.Tk):
             self.runtime_q.put(t)
 
         if removed:
-            self._log(f"[Tasks] Removed {removed} queued item(s) for deleted task(s).")
+            self._log(f"[Tasks] Removed {removed} queued item(s) from runtime queue.")
 
     def enqueue_selected_or_enabled(self):
         """
