@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.7.3"
+APP_VERSION = "1.7.4"
 
 UI_THEME = {
     "bg": "#111318",
@@ -2883,9 +2883,146 @@ class MRQLauncher(tk.Tk):
         self._log(f"[Status] Cleared status for {len(sel)} task(s).")
 
 # -------------------------------------------------
+# Optional Qt shell preview
+# -------------------------------------------------
+
+def run_qt_shell() -> int:
+    """Launch the first PySide6 shell without replacing the Tkinter launcher."""
+    try:
+        from PySide6.QtWidgets import (
+            QApplication,
+            QFrame,
+            QHBoxLayout,
+            QLabel,
+            QMainWindow,
+            QPushButton,
+            QStatusBar,
+            QTableWidget,
+            QTextEdit,
+            QVBoxLayout,
+            QWidget,
+        )
+    except ImportError as exc:
+        print("PySide6 is required for the Qt shell. Install it with: pip install PySide6")
+        print(f"Import error: {exc}")
+        return 1
+
+    class QtMRQShell(QMainWindow):
+        """Minimal Qt window foundation for the future launcher UI."""
+
+        def __init__(self):
+            super().__init__()
+            self.setWindowTitle(f"MRQ Launcher (Qt Shell) ver {APP_VERSION}")
+            self.resize(1280, 760)
+            self.setMinimumSize(900, 560)
+            self._build_ui()
+
+        def _build_ui(self) -> None:
+            root = QWidget(self)
+            root_layout = QVBoxLayout(root)
+            root_layout.setContentsMargins(12, 12, 12, 12)
+            root_layout.setSpacing(8)
+            self.setCentralWidget(root)
+            root_layout.addWidget(self._build_header())
+
+            body = QHBoxLayout()
+            body.setSpacing(8)
+            body.addWidget(self._build_queue_area(), 3)
+            body.addWidget(self._build_inspector_area(), 1)
+            root_layout.addLayout(body, 1)
+            root_layout.addWidget(self._build_diagnostics_area())
+
+            status = QStatusBar(self)
+            status.showMessage("Qt shell ready. Tkinter launcher remains the production UI.")
+            self.setStatusBar(status)
+
+        def _panel(self) -> QFrame:
+            panel = QFrame(self)
+            panel.setFrameShape(QFrame.StyledPanel)
+            return panel
+
+        def _build_header(self) -> QFrame:
+            panel = self._panel()
+            layout = QHBoxLayout(panel)
+            title_block = QVBoxLayout()
+            title = QLabel("MRQ Launcher CLI")
+            title.setStyleSheet("font-size: 20px; font-weight: 700;")
+            subtitle = QLabel("Qt shell foundation")
+            subtitle.setStyleSheet("color: #8a94a6;")
+            title_block.addWidget(title)
+            title_block.addWidget(subtitle)
+            layout.addLayout(title_block, 1)
+            for text in ("Load Queue", "Save Queue", "Minimal Mode"):
+                layout.addWidget(QPushButton(text))
+            return panel
+
+        def _build_queue_area(self) -> QFrame:
+            panel = self._panel()
+            layout = QVBoxLayout(panel)
+            layout.addWidget(QLabel("Render Queue"))
+            toolbar = QHBoxLayout()
+            for text in ("Add Job", "Edit", "Duplicate", "Remove", "Move Up", "Move Down", "Toggle"):
+                toolbar.addWidget(QPushButton(text))
+            toolbar.addStretch(1)
+            layout.addLayout(toolbar)
+            table = QTableWidget(0, 7, panel)
+            table.setHorizontalHeaderLabels(["Status", "Level", "Sequence", "Preset", "Running Time", "Start", "End"])
+            layout.addWidget(table, 1)
+            return panel
+
+        def _build_inspector_area(self) -> QFrame:
+            panel = self._panel()
+            layout = QVBoxLayout(panel)
+            layout.addWidget(QLabel("Job Inspector"))
+            for text in (
+                "Job Name: No selection",
+                "Enabled: -",
+                "Project: -",
+                "Level: -",
+                "Sequence: -",
+                "Preset: -",
+                "Output Directory: -",
+                "Validation: -",
+            ):
+                label = QLabel(text)
+                label.setWordWrap(True)
+                layout.addWidget(label)
+            layout.addStretch(1)
+            layout.addWidget(QPushButton("Copy Command"))
+            layout.addWidget(QPushButton("Open Output Folder"))
+            return panel
+
+        def _build_diagnostics_area(self) -> QFrame:
+            panel = self._panel()
+            layout = QVBoxLayout(panel)
+            controls = QHBoxLayout()
+            for text in ("Render Enabled", "Render Selected", "Queue Selected", "Render All", "Stop Current Render", "Stop All"):
+                controls.addWidget(QPushButton(text))
+            controls.addStretch(1)
+            layout.addLayout(controls)
+            diagnostics = QHBoxLayout()
+            command_preview = QTextEdit(panel)
+            command_preview.setReadOnly(True)
+            command_preview.setPlaceholderText("Command preview will be connected in a later task.")
+            log_view = QTextEdit(panel)
+            log_view.setReadOnly(True)
+            log_view.setPlaceholderText("Runtime log will be connected in a later task.")
+            diagnostics.addWidget(command_preview, 1)
+            diagnostics.addWidget(log_view, 1)
+            layout.addLayout(diagnostics)
+            return panel
+
+    app = QApplication.instance() or QApplication(sys.argv)
+    window = QtMRQShell()
+    window.show()
+    return app.exec()
+
+# -------------------------------------------------
 # Entrypoint
 # -------------------------------------------------
 
 if __name__ == "__main__":
+    if "--qt" in sys.argv:
+        raise SystemExit(run_qt_shell())
     app = MRQLauncher()
     app.mainloop()
