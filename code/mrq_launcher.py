@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.7.6"
+APP_VERSION = "1.7.7"
 
 UI_THEME = {
     "bg": "#111318",
@@ -2960,6 +2960,17 @@ def run_qt_shell() -> int:
             self.current_task_label = None
             self.current_status_label = None
             self.session_time_label = None
+            self.minimal_progress_bar = None
+            self.minimal_current_task_label = None
+            self.minimal_current_status_label = None
+            self.minimal_session_time_label = None
+            self.header_panel = None
+            self.queue_panel = None
+            self.inspector_panel = None
+            self.diagnostics_panel = None
+            self.minimal_footer = None
+            self.minimal_mode = False
+            self._normal_geometry = None
             self.inspector_labels = {}
             self.setWindowTitle(f"MRQ Launcher (Qt Shell) ver {APP_VERSION}")
             self.resize(1280, 760)
@@ -2976,13 +2987,20 @@ def run_qt_shell() -> int:
             root_layout.setContentsMargins(12, 12, 12, 12)
             root_layout.setSpacing(8)
             self.setCentralWidget(root)
-            root_layout.addWidget(self._build_header())
+            self.header_panel = self._build_header()
+            root_layout.addWidget(self.header_panel)
             body = QHBoxLayout()
             body.setSpacing(8)
-            body.addWidget(self._build_queue_area(), 3)
-            body.addWidget(self._build_inspector_area(), 1)
+            self.queue_panel = self._build_queue_area()
+            self.inspector_panel = self._build_inspector_area()
+            body.addWidget(self.queue_panel, 3)
+            body.addWidget(self.inspector_panel, 1)
             root_layout.addLayout(body, 1)
-            root_layout.addWidget(self._build_diagnostics_area())
+            self.diagnostics_panel = self._build_diagnostics_area()
+            root_layout.addWidget(self.diagnostics_panel)
+            self.minimal_footer = self._build_minimal_footer()
+            self.minimal_footer.setVisible(False)
+            root_layout.addWidget(self.minimal_footer)
             status = QStatusBar(self)
             status.showMessage("Qt runtime workspace ready.")
             self.setStatusBar(status)
@@ -3008,8 +3026,7 @@ def run_qt_shell() -> int:
             save_button = QPushButton("Save Queue")
             save_button.clicked.connect(self.save_queue_dialog)
             minimal_button = QPushButton("Minimal Mode")
-            minimal_button.setEnabled(False)
-            minimal_button.setToolTip("Minimal Mode will be rebuilt after the Qt runtime workspace is connected.")
+            minimal_button.clicked.connect(self.enter_minimal_mode)
             layout.addWidget(load_button)
             layout.addWidget(save_button)
             layout.addWidget(minimal_button)
@@ -3113,6 +3130,78 @@ def run_qt_shell() -> int:
             layout.addLayout(diagnostics)
             return panel
 
+        def _build_minimal_footer(self) -> QFrame:
+            panel = self._panel()
+            layout = QHBoxLayout(panel)
+            self.minimal_current_task_label = QLabel("Current task: Idle")
+            self.minimal_current_status_label = QLabel("Status: Idle")
+            self.minimal_session_time_label = QLabel("Session total: 00:00:00")
+            self.minimal_progress_bar = QProgressBar(panel)
+            self.minimal_progress_bar.setRange(0, 100)
+            self.minimal_progress_bar.setValue(0)
+            stop_current = QPushButton("Stop Current")
+            stop_current.clicked.connect(self.cancel_current)
+            stop_all = QPushButton("Stop All")
+            stop_all.clicked.connect(self.cancel_all)
+            exit_button = QPushButton("Exit Minimal Mode")
+            exit_button.clicked.connect(self.exit_minimal_mode)
+            layout.addWidget(self.minimal_current_task_label)
+            layout.addWidget(self.minimal_current_status_label)
+            layout.addWidget(self.minimal_progress_bar, 1)
+            layout.addWidget(self.minimal_session_time_label)
+            layout.addWidget(stop_current)
+            layout.addWidget(stop_all)
+            layout.addWidget(exit_button)
+            return panel
+
+        def enter_minimal_mode(self) -> None:
+            if self.minimal_mode:
+                return
+            self.minimal_mode = True
+            self._normal_geometry = self.saveGeometry()
+            if self.header_panel:
+                self.header_panel.setVisible(False)
+            if self.inspector_panel:
+                self.inspector_panel.setVisible(False)
+            if self.diagnostics_panel:
+                self.diagnostics_panel.setVisible(False)
+            if self.minimal_footer:
+                self.minimal_footer.setVisible(True)
+            self._set_minimal_columns(True)
+            self.refresh_queue_view()
+            self.resize(max(760, self.width()), max(420, min(self.height(), 620)))
+            self.statusBar().showMessage("Minimal Mode: execution-only view")
+
+        def exit_minimal_mode(self) -> None:
+            if not self.minimal_mode:
+                return
+            self.minimal_mode = False
+            if self.header_panel:
+                self.header_panel.setVisible(True)
+            if self.inspector_panel:
+                self.inspector_panel.setVisible(True)
+            if self.diagnostics_panel:
+                self.diagnostics_panel.setVisible(True)
+            if self.minimal_footer:
+                self.minimal_footer.setVisible(False)
+            self._set_minimal_columns(False)
+            self.refresh_queue_view()
+            if self._normal_geometry:
+                self.restoreGeometry(self._normal_geometry)
+            self.statusBar().showMessage("Qt runtime workspace ready.")
+
+        def toggle_minimal_mode(self) -> None:
+            if self.minimal_mode:
+                self.exit_minimal_mode()
+            else:
+                self.enter_minimal_mode()
+
+        def _set_minimal_columns(self, enabled: bool) -> None:
+            if not self.table:
+                return
+            for column in (5, 6):
+                self.table.setColumnHidden(column, enabled)
+
         def _ensure_state(self) -> None:
             while len(self.state) < len(self.settings.tasks):
                 self.state.append(default_task_state())
@@ -3125,6 +3214,8 @@ def run_qt_shell() -> int:
             for idx, task in enumerate(self.settings.tasks):
                 state = self.state[idx] if idx < len(self.state) else default_task_state()
                 haystack = " ".join([task.uproject, task.level, task.sequence, task.preset, task.output_dir, state.get("status", "Ready")]).lower()
+                if self.minimal_mode and not task.enabled:
+                    continue
                 if not query or query in haystack:
                     visible.append(idx)
             return visible
@@ -3304,14 +3395,23 @@ def run_qt_shell() -> int:
             if current_idx is not None and 0 <= current_idx < len(self.settings.tasks):
                 task = self.settings.tasks[current_idx]
                 state = self.state[current_idx]
-                self.current_task_label.setText(f"Current task: {soft_name(task.sequence)}")
-                self.current_status_label.setText(f"Status: {state.get('status', 'Ready')}")
+                current_task_text = f"Current task: {soft_name(task.sequence)}"
+                current_status_text = f"Status: {state.get('status', 'Ready')}"
                 progress = state.get("progress") or 0
-                self.progress_bar.setValue(int(progress))
             else:
-                self.current_task_label.setText("Current task: Idle")
-                self.current_status_label.setText("Status: Idle")
-                self.progress_bar.setValue(0)
+                current_task_text = "Current task: Idle"
+                current_status_text = "Status: Idle"
+                progress = 0
+
+            self.current_task_label.setText(current_task_text)
+            self.current_status_label.setText(current_status_text)
+            self.progress_bar.setValue(int(progress))
+            if self.minimal_current_task_label:
+                self.minimal_current_task_label.setText(current_task_text)
+            if self.minimal_current_status_label:
+                self.minimal_current_status_label.setText(current_status_text)
+            if self.minimal_progress_bar:
+                self.minimal_progress_bar.setValue(int(progress))
 
         def _update_session_runtime(self) -> None:
             for idx, state in enumerate(self.state):
@@ -3330,7 +3430,10 @@ def run_qt_shell() -> int:
                     total += max(0, int(time.time() - state["start"]))
             h, rem = divmod(total, 3600)
             m, s = divmod(rem, 60)
-            self.session_time_label.setText(f"Session total: {h:02d}:{m:02d}:{s:02d}")
+            session_text = f"Session total: {h:02d}:{m:02d}:{s:02d}"
+            self.session_time_label.setText(session_text)
+            if self.minimal_session_time_label:
+                self.minimal_session_time_label.setText(session_text)
 
         def load_queue_dialog(self) -> None:
             path, _ = QFileDialog.getOpenFileName(self, "Load Queue", "", "JSON (*.json);;All Files (*.*)")
