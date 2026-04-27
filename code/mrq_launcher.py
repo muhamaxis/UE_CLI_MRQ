@@ -18,7 +18,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.5.4"
+APP_VERSION = "1.5.5"
 
 UI_THEME = {
     "bg": "#111318",
@@ -34,6 +34,16 @@ UI_THEME = {
     "warning": "#8A6A2F",
     "danger": "#8B3A46",
     "entry": "#10141A",
+}
+
+STATUS_PILL_THEME = {
+    "ready": {"bg": "#173A28", "text": "#8FE6B0", "border": "#24573A"},
+    "queued": {"bg": "#3A3116", "text": "#F0C85B", "border": "#655523"},
+    "rendering": {"bg": "#1E315B", "text": "#A8C9FF", "border": "#35518E"},
+    "done": {"bg": "#2A3444", "text": "#E7ECF3", "border": "#3A4557"},
+    "failed": {"bg": "#47232A", "text": "#FF9AA9", "border": "#6F313D"},
+    "disabled": {"bg": "#2A313B", "text": "#C9D2DD", "border": "#404B59"},
+    "skipped": {"bg": "#3A2A4B", "text": "#D7C7FF", "border": "#5C4777"},
 }
 # -------------------------------------------------
 # Helpers
@@ -107,21 +117,40 @@ def format_added_display(value: str) -> str:
     return dt.strftime("%Y-%m-%d %H:%M")
 
 
-def format_status_indicator(status: str, enabled: bool) -> str:
+def get_status_display(status: str, enabled: bool) -> str:
     if not enabled:
-        return "○ Disabled"
-    status = status or "Ready"
-    if status.startswith("Failed") or status.startswith("Cancelled"):
-        return "● Failed"
+        return "Disabled"
+    status = (status or "Ready").strip()
+    if status.startswith("Cancelled"):
+        return status
+    if status.startswith("Failed"):
+        return status
     if status.startswith("Done"):
-        return "● Done"
+        return status
     if status.startswith("Rendering"):
-        return "◉ Rendering"
+        return status
     if status.startswith("Skipped"):
-        return "◌ Skipped"
+        return status
     if status == "Queued":
-        return "◌ Queued"
-    return "● Ready"
+        return "Queued"
+    return "Ready"
+
+
+def get_status_kind(status: str, enabled: bool) -> str:
+    if not enabled:
+        return "disabled"
+    status = (status or "Ready").strip()
+    if status.startswith("Cancelled") or status.startswith("Failed"):
+        return "failed"
+    if status.startswith("Done"):
+        return "done"
+    if status.startswith("Rendering"):
+        return "rendering"
+    if status.startswith("Skipped"):
+        return "skipped"
+    if status == "Queued":
+        return "queued"
+    return "ready"
 
 
 def configure_windows_dpi_awareness() -> None:
@@ -307,6 +336,7 @@ class MRQLauncher(tk.Tk):
         self._session_total_label: Optional[tk.Label] = None
         self.command_preview: Optional[tk.Text] = None
         self.inspector_vars = {}
+        self.status_pill_widgets = {}
         self._build_ui()
         self.after(50, self._drain_queues)
         # Periodic update for the session total time label
@@ -671,19 +701,17 @@ class MRQLauncher(tk.Tk):
         tree_shell = tk.Frame(parent, bg=UI_THEME["panel"])
         tree_shell.pack(fill=tk.BOTH, expand=True)
 
-        cols = ("enabled", "status", "job", "level", "sequence", "preset", "added")
+        cols = ("status", "level", "sequence", "preset", "added")
         self.tree = ttk.Treeview(tree_shell, columns=cols, show="headings", selectmode="extended")
         for name, title, width, anchor in (
-            ("enabled", "On", self._s(48), "center"),
-            ("status", "Status", self._s(150), "w"),
-            ("job", "Job", self._s(220), "w"),
-            ("level", "Level", self._s(160), "w"),
-            ("sequence", "Sequence", self._s(190), "w"),
-            ("preset", "Preset", self._s(280), "w"),
+            ("status", "Status", self._s(220), "w"),
+            ("level", "Level", self._s(150), "w"),
+            ("sequence", "Sequence", self._s(220), "w"),
+            ("preset", "Preset", self._s(300), "w"),
             ("added", "Added", self._s(150), "w"),
         ):
             self.tree.heading(name, text=title)
-            self.tree.column(name, width=width, anchor=anchor, stretch=(name != "enabled"))
+            self.tree.column(name, width=width, anchor=anchor, stretch=True)
 
         self.tree.tag_configure("status_ready", foreground=UI_THEME["text"])
         self.tree.tag_configure("status_queued", foreground="#FFD28A")
@@ -697,6 +725,10 @@ class MRQLauncher(tk.Tk):
         self.tree.bind("<Double-1>", self.on_tree_dblclick)
         self.tree.bind("<space>", self.on_space_toggle)
         self.tree.bind("<<TreeviewSelect>>", self._on_tree_selection_changed)
+        self.tree.bind("<Configure>", lambda _e: self.after_idle(self._refresh_status_pills))
+        self.tree.bind("<MouseWheel>", lambda _e: self.after_idle(self._refresh_status_pills))
+        self.tree.bind("<Button-4>", lambda _e: self.after_idle(self._refresh_status_pills))
+        self.tree.bind("<Button-5>", lambda _e: self.after_idle(self._refresh_status_pills))
 
         self.ctx_task = tk.Menu(self, tearoff=0, bg=UI_THEME["panel"], fg=UI_THEME["text"], activebackground=UI_THEME["panel_soft"], activeforeground=UI_THEME["text"])
         self.ctx_task.add_command(label="Add Task", command=self.add_task)
@@ -718,11 +750,11 @@ class MRQLauncher(tk.Tk):
         self.tree.bind("<Button-3>", self._on_tree_right_click)
         self.tree.bind("<Control-Button-1>", self._on_tree_right_click)
 
-        sb = ttk.Scrollbar(tree_shell, orient="vertical", command=self.tree.yview)
+        sb = ttk.Scrollbar(tree_shell, orient="vertical", command=self._on_tree_yview)
         self.tree.configure(yscrollcommand=sb.set)
         sb.pack(side=tk.RIGHT, fill=tk.Y)
 
-        hsb = ttk.Scrollbar(parent, orient="horizontal", command=self.tree.xview)
+        hsb = ttk.Scrollbar(parent, orient="horizontal", command=self._on_tree_xview)
         self.tree.configure(xscrollcommand=hsb.set)
         hsb.pack(fill=tk.X, pady=(8, 0))
 
@@ -884,6 +916,106 @@ class MRQLauncher(tk.Tk):
         tk.Label(parent, textvariable=self.status_counts_var, bg=UI_THEME["panel_alt"], fg=UI_THEME["muted"], font=("Segoe UI", 9), padx=10, pady=6).pack(side=tk.LEFT)
         tk.Label(parent, textvariable=self.status_engine_var, bg=UI_THEME["panel_alt"], fg=UI_THEME["muted"], font=("Segoe UI", 9), padx=10, pady=6).pack(side=tk.RIGHT)
 
+
+    def _on_tree_yview(self, *args):
+        self.tree.yview(*args)
+        self.after_idle(self._refresh_status_pills)
+
+    def _on_tree_xview(self, *args):
+        self.tree.xview(*args)
+        self.after_idle(self._refresh_status_pills)
+
+    def _round_rect(self, canvas: tk.Canvas, x1: int, y1: int, x2: int, y2: int, radius: int, **kwargs):
+        radius = max(0, min(radius, int((x2 - x1) / 2), int((y2 - y1) / 2)))
+        points = [
+            x1 + radius, y1,
+            x2 - radius, y1,
+            x2, y1,
+            x2, y1 + radius,
+            x2, y2 - radius,
+            x2, y2,
+            x2 - radius, y2,
+            x1 + radius, y2,
+            x1, y2,
+            x1, y2 - radius,
+            x1, y1 + radius,
+            x1, y1,
+        ]
+        return canvas.create_polygon(points, smooth=True, splinesteps=24, **kwargs)
+
+    def _clear_status_pills(self):
+        for widget in self.status_pill_widgets.values():
+            try:
+                widget.destroy()
+            except Exception:
+                pass
+        self.status_pill_widgets.clear()
+
+    def _refresh_status_pills(self):
+        if not hasattr(self, "tree") or self.tree is None:
+            return
+        self._clear_status_pills()
+        children = self.tree.get_children()
+        if not children:
+            return
+        for iid in children:
+            bbox = self.tree.bbox(iid, "status")
+            if not bbox:
+                continue
+            x, y, w, h = bbox
+            idx = int(iid)
+            task = self.settings.tasks[idx]
+            raw_status = self.state[idx]["status"] if idx < len(self.state) else "Ready"
+            status_text = get_status_display(raw_status, task.enabled)
+            kind = get_status_kind(raw_status, task.enabled)
+            palette = STATUS_PILL_THEME.get(kind, STATUS_PILL_THEME["ready"])
+
+            pill_h = max(self._s(22), h - self._s(6))
+            pill_w = max(self._s(92), min(w - self._s(10), self._s(22) + len(status_text) * self._s(7)))
+            pill_y = y + max(1, (h - pill_h) // 2)
+            pill_x = x + self._s(10)
+
+            pill = tk.Canvas(
+                self.tree,
+                width=pill_w,
+                height=pill_h,
+                bg=UI_THEME["panel"],
+                highlightthickness=0,
+                bd=0,
+                relief=tk.FLAT,
+                takefocus=0,
+            )
+            pill.place(x=pill_x, y=pill_y)
+            self._round_rect(
+                pill,
+                1,
+                1,
+                pill_w - 1,
+                pill_h - 1,
+                radius=self._s(9),
+                fill=palette["bg"],
+                outline=palette["border"],
+                width=1,
+            )
+            pill.create_text(
+                pill_w // 2,
+                pill_h // 2,
+                text=status_text,
+                fill=palette["text"],
+                font=("Segoe UI", max(8, self._s(8)), "bold"),
+            )
+            pill.bind("<Button-1>", lambda e, item=iid: self._select_tree_item(item))
+            self.status_pill_widgets[iid] = pill
+
+    def _select_tree_item(self, iid: str):
+        try:
+            self.tree.selection_set(iid)
+            self.tree.focus(iid)
+            self.tree.see(iid)
+            self._on_tree_selection_changed()
+        except Exception:
+            pass
+
     def _detect_ue_version(self) -> str:
         ue_path = self.var_ue.get().strip() if hasattr(self, "var_ue") else self.settings.ue_cmd
         parts = ue_path.replace("\\", "/").split("/")
@@ -961,6 +1093,7 @@ class MRQLauncher(tk.Tk):
     def _set_tree_item(self, idx: int):
         if self.tree.exists(str(idx)):
             self.tree.item(str(idx), values=self._row_values(idx), tags=(self._status_tag_for_index(idx),))
+            self.after_idle(self._refresh_status_pills)
 
     def _update_queue_stats(self):
         if not hasattr(self, "queue_stats_var"):
@@ -1097,6 +1230,7 @@ class MRQLauncher(tk.Tk):
         self._update_queue_stats()
 
     def _on_tree_selection_changed(self, _event=None):
+        self.after_idle(self._refresh_status_pills)
         self._update_inspector()
         self._update_command_preview()
         self._update_status_summary()
@@ -1133,12 +1267,8 @@ class MRQLauncher(tk.Tk):
 
     def _row_values(self, i: int):
         t = self.settings.tasks[i]
-        st = self.state[i]["status"] if i < len(self.state) else "Ready"
-        job_name = soft_name(t.sequence)
         return (
-            "✔" if t.enabled else "",
-            format_status_indicator(st, t.enabled),
-            job_name,
+            "",
             soft_name(t.level),
             soft_name(t.sequence),
             soft_name(t.preset),
@@ -1166,6 +1296,7 @@ class MRQLauncher(tk.Tk):
                 task.preset,
                 task.output_dir,
                 task.added_at,
+                self.state[i].get("status", "Ready") if i < len(self.state) else "Ready",
             ]).lower()
             if query and query not in haystack:
                 continue
@@ -1176,6 +1307,7 @@ class MRQLauncher(tk.Tk):
             self.tree.selection_set(visible_selection)
             self.tree.focus(visible_selection[0])
 
+        self.after_idle(self._refresh_status_pills)
         self._update_inspector()
         self._update_command_preview()
         self._update_status_summary()
