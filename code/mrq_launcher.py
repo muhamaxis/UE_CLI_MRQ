@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.6.0"
+APP_VERSION = "1.6.1"
 
 UI_THEME = {
     "bg": "#111318",
@@ -385,6 +385,8 @@ class MRQLauncher(tk.Tk):
             "start": self._s(120),
             "end": self._s(120),
         }
+        self.full_display_columns = self.tree_columns
+        self.minimal_display_columns = ("status", "level", "sequence", "preset", "runtime")
         self.log_queue: "queue.Queue[str]" = queue.Queue()
         self.ui_queue: "queue.Queue[tuple]" = queue.Queue()
         self.state: List[dict] = []  # {status, progress, start, end}
@@ -516,7 +518,8 @@ class MRQLauncher(tk.Tk):
         )
 
     def _build_menu(self):
-        menubar = tk.Menu(self, bg=UI_THEME["panel"], fg=UI_THEME["text"], activebackground=UI_THEME["panel_soft"], activeforeground=UI_THEME["text"])
+        self.main_menubar = tk.Menu(self, bg=UI_THEME["panel"], fg=UI_THEME["text"], activebackground=UI_THEME["panel_soft"], activeforeground=UI_THEME["text"])
+        menubar = self.main_menubar
 
         m_task = tk.Menu(menubar, tearoff=0, bg=UI_THEME["panel"], fg=UI_THEME["text"], activebackground=UI_THEME["panel_soft"], activeforeground=UI_THEME["text"])
         m_task.add_command(label="Add Task", command=self.add_task)
@@ -555,6 +558,7 @@ class MRQLauncher(tk.Tk):
         m_save.add_command(label="Save Queue Log", command=self.save_queue_log)
         menubar.add_cascade(label="Save", menu=m_save)
 
+        self.minimal_menubar = tk.Menu(self)
         self.config(menu=menubar)
 
     def _create_panel(self, parent, width=None, height=None, padx=0, pady=0):
@@ -770,6 +774,7 @@ class MRQLauncher(tk.Tk):
         self.tree_shell.pack(fill=tk.BOTH, expand=True)
 
         self.tree = ttk.Treeview(self.tree_shell, columns=self.tree_columns, show="headings", selectmode="extended")
+        self.tree["displaycolumns"] = self.full_display_columns
         for name in self.tree_columns:
             self.tree.heading(name, text=self.tree_column_titles[name])
             self.tree.column(name, width=self.tree_column_defaults[name], anchor="w", stretch=True)
@@ -1028,7 +1033,11 @@ class MRQLauncher(tk.Tk):
             return format_state_time_display(state.get("end"))
         return ""
 
+    def _visible_tree_columns(self):
+        return self.minimal_display_columns if self.minimal_mode else self.full_display_columns
+
     def _apply_default_tree_columns(self):
+        self.tree["displaycolumns"] = self.full_display_columns
         for name in self.tree_columns:
             self.tree.column(name, width=self.tree_column_defaults[name], anchor="w", stretch=True)
 
@@ -1038,7 +1047,7 @@ class MRQLauncher(tk.Tk):
         visible_items = [int(iid) for iid in self.tree.get_children()]
         font = tkfont.nametofont("TkDefaultFont")
         base_padding = self._s(28)
-        for name in self.tree_columns:
+        for name in self._visible_tree_columns():
             width = font.measure(self.tree_column_titles[name]) + base_padding
             if name == "status":
                 width = max(width, self._s(110))
@@ -1057,7 +1066,7 @@ class MRQLauncher(tk.Tk):
             self.tree.column(name, width=width, anchor="w", stretch=False)
 
     def _compute_minimal_geometry(self) -> str:
-        total_width = sum(int(float(self.tree.column(name, "width"))) for name in self.tree_columns)
+        total_width = sum(int(float(self.tree.column(name, "width"))) for name in self._visible_tree_columns())
         total_width += self._s(72)
         screen_width = max(self.winfo_screenwidth() - self._s(80), self.minimal_mode_minsize[0])
         target_width = max(self.minimal_mode_minsize[0], min(total_width, screen_width))
@@ -1083,7 +1092,9 @@ class MRQLauncher(tk.Tk):
         self.queue_toolbar.pack_forget()
         self.queue_stats_frame.pack_forget()
         self.queue_hscroll.pack_forget()
+        self.config(menu=self.minimal_menubar)
 
+        self.tree["displaycolumns"] = self.minimal_display_columns
         self.minimal_header.pack(fill=tk.X, pady=(0, 10), before=self.tree_shell)
         self.minimal_footer.pack(fill=tk.X, pady=(10, 0))
 
@@ -1100,6 +1111,7 @@ class MRQLauncher(tk.Tk):
 
         self.minimal_header.pack_forget()
         self.minimal_footer.pack_forget()
+        self.config(menu=self.main_menubar)
 
         self.header_panel.pack(fill=tk.X, padx=self._s(12), pady=(self._s(12), self._s(8)), before=self.body)
         self.bottom_panel.pack(fill=tk.BOTH, expand=False, pady=(self._s(8), 0), after=self.upper_body)
@@ -1151,14 +1163,19 @@ class MRQLauncher(tk.Tk):
     def _refresh_status_pills(self):
         if not hasattr(self, "tree") or self.tree is None:
             return
-        self._clear_status_pills()
+
         children = self.tree.get_children()
+        visible_items = set()
         if not children:
+            self._clear_status_pills()
             return
+
         for iid in children:
             bbox = self.tree.bbox(iid, "status")
             if not bbox:
                 continue
+
+            visible_items.add(iid)
             x, y, w, h = bbox
             idx = int(iid)
             task = self.settings.tasks[idx]
@@ -1171,39 +1188,59 @@ class MRQLauncher(tk.Tk):
             pill_w = max(self._s(92), min(w - self._s(10), self._s(22) + len(status_text) * self._s(7)))
             pill_y = y + max(1, (h - pill_h) // 2)
             pill_x = x + self._s(10)
+            signature = (pill_w, pill_h, status_text, palette["bg"], palette["border"], palette["text"])
 
-            pill = tk.Canvas(
-                self.tree,
-                width=pill_w,
-                height=pill_h,
-                bg=UI_THEME["panel"],
-                highlightthickness=0,
-                bd=0,
-                relief=tk.FLAT,
-                takefocus=0,
-            )
-            pill.place(x=pill_x, y=pill_y)
-            self._round_rect(
-                pill,
-                1,
-                1,
-                pill_w - 1,
-                pill_h - 1,
-                radius=self._s(9),
-                fill=palette["bg"],
-                outline=palette["border"],
-                width=1,
-            )
-            pill.create_text(
-                pill_w // 2,
-                pill_h // 2,
-                text=status_text,
-                fill=palette["text"],
-                font=("Segoe UI", max(8, self._s(8)), "bold"),
-            )
-            pill.bind("<Button-1>", lambda e, item=iid: self._select_tree_item(item))
-            pill.bind("<Double-Button-1>", lambda e, item=iid: self._toggle_tree_item_ready_disabled(item))
-            self.status_pill_widgets[iid] = pill
+            pill = self.status_pill_widgets.get(iid)
+            if pill is None or not pill.winfo_exists():
+                pill = tk.Canvas(
+                    self.tree,
+                    width=pill_w,
+                    height=pill_h,
+                    bg=UI_THEME["panel"],
+                    highlightthickness=0,
+                    bd=0,
+                    relief=tk.FLAT,
+                    takefocus=0,
+                )
+                pill.bind("<Button-1>", lambda e, item=iid: self._select_tree_item(item))
+                pill.bind("<Double-Button-1>", lambda e, item=iid: self._toggle_tree_item_ready_disabled(item))
+                pill._pill_signature = None
+                self.status_pill_widgets[iid] = pill
+
+            pill.place_configure(x=pill_x, y=pill_y)
+            if int(pill.cget("width")) != pill_w or int(pill.cget("height")) != pill_h:
+                pill.configure(width=pill_w, height=pill_h)
+
+            if getattr(pill, "_pill_signature", None) != signature:
+                pill.delete("all")
+                self._round_rect(
+                    pill,
+                    1,
+                    1,
+                    pill_w - 1,
+                    pill_h - 1,
+                    radius=self._s(9),
+                    fill=palette["bg"],
+                    outline=palette["border"],
+                    width=1,
+                )
+                pill.create_text(
+                    pill_w // 2,
+                    pill_h // 2,
+                    text=status_text,
+                    fill=palette["text"],
+                    font=("Segoe UI", max(8, self._s(8)), "bold"),
+                )
+                pill._pill_signature = signature
+
+        stale_items = [iid for iid in self.status_pill_widgets.keys() if iid not in visible_items]
+        for iid in stale_items:
+            widget = self.status_pill_widgets.pop(iid, None)
+            if widget is not None:
+                try:
+                    widget.destroy()
+                except Exception:
+                    pass
 
     def _select_tree_item(self, iid: str):
         try:
