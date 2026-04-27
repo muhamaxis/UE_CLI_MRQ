@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.6.9"
+APP_VERSION = "1.7.1"
 
 UI_THEME = {
     "bg": "#111318",
@@ -237,6 +237,240 @@ class AppSettings:
     extra_cli: str = ""  # free-form string for additional arguments
     auto_minimal_on_render: bool = True
 
+
+class PersistenceError(Exception):
+    """Raised when persisted queue or task payloads are invalid."""
+
+
+class PersistenceRepository:
+    """Centralized JSON persistence for queue settings and render tasks."""
+
+    TASK_FIELDS = {field.name for field in RenderTask.__dataclass_fields__.values()}
+    REQUIRED_TASK_FIELDS = ("uproject", "level", "sequence", "preset")
+    QUEUE_CONFIG_FIELDS = (
+        "ue_cmd",
+        "retries",
+        "fail_policy",
+        "kill_timeout_s",
+        "windowed",
+        "resx",
+        "resy",
+        "no_texture_streaming",
+        "auto_minimal_on_render",
+        "extra_cli",
+    )
+
+    @classmethod
+    def load_queue(cls, path: str, defaults: AppSettings) -> tuple[dict, List[RenderTask]]:
+        payload = cls._read_json_object(path)
+        raw_tasks = payload.get("tasks", [])
+        if not isinstance(raw_tasks, list):
+            raise PersistenceError("Queue file field 'tasks' must be a list.")
+
+        config = cls._normalize_queue_config(payload, defaults)
+        tasks = [cls._task_from_payload(item, require_required=False) for item in raw_tasks]
+        return config, tasks
+
+    @classmethod
+    def save_queue(cls, path: str, config: dict, tasks: List[RenderTask]) -> None:
+        payload = {key: config.get(key) for key in cls.QUEUE_CONFIG_FIELDS}
+        payload["tasks"] = [cls.task_to_payload(task) for task in tasks]
+        cls._write_json(path, payload)
+
+    @classmethod
+    def load_task_file(cls, path: str) -> List[RenderTask]:
+        payload = cls._read_json_object(path)
+        if cls._looks_like_task_payload(payload):
+            return [cls._task_from_payload(payload, require_required=True)]
+        if "tasks" in payload:
+            raw_tasks = payload.get("tasks", [])
+            if not isinstance(raw_tasks, list):
+                raise PersistenceError("Task file field 'tasks' must be a list.")
+            tasks = []
+            for item in raw_tasks:
+                if cls._looks_like_task_payload(item):
+                    tasks.append(cls._task_from_payload(item, require_required=True))
+            return tasks
+        raise PersistenceError("Task file must contain a task payload or a 'tasks' array.")
+
+    @classmethod
+    def save_task(cls, path: str, task: RenderTask) -> None:
+        cls._write_json(path, cls.task_to_payload(task))
+
+    @classmethod
+    def task_to_payload(cls, task: RenderTask) -> dict:
+        return asdict(task)
+
+    @classmethod
+    def _read_json_object(cls, path: str) -> dict:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+        except Exception as exc:
+            raise PersistenceError(str(exc)) from exc
+        if not isinstance(payload, dict):
+            raise PersistenceError("JSON root must be an object.")
+        return payload
+
+    @classmethod
+    def _write_json(cls, path: str, payload: dict) -> None:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+
+    @classmethod
+    def _normalize_queue_config(cls, payload: dict, defaults: AppSettings) -> dict:
+        return {
+            "ue_cmd": str(payload.get("ue_cmd", defaults.ue_cmd)),
+            "retries": cls._int_or_default(payload.get("retries", defaults.retries), defaults.retries),
+            "fail_policy": str(payload.get("fail_policy", defaults.fail_policy)),
+            "kill_timeout_s": cls._int_or_default(payload.get("kill_timeout_s", defaults.kill_timeout_s), defaults.kill_timeout_s),
+            "windowed": bool(payload.get("windowed", defaults.windowed)),
+            "resx": cls._int_or_default(payload.get("resx", defaults.resx), defaults.resx),
+            "resy": cls._int_or_default(payload.get("resy", defaults.resy), defaults.resy),
+            "no_texture_streaming": bool(payload.get("no_texture_streaming", defaults.no_texture_streaming)),
+            "auto_minimal_on_render": bool(payload.get("auto_minimal_on_render", defaults.auto_minimal_on_render)),
+            "extra_cli": str(payload.get("extra_cli", defaults.extra_cli)),
+        }
+
+    @classmethod
+    def _task_from_payload(cls, payload: dict, require_required: bool) -> RenderTask:
+        if not isinstance(payload, dict):
+            raise PersistenceError("Task payload must be an object.")
+        if require_required:
+            missing = [key for key in cls.REQUIRED_TASK_FIELDS if not payload.get(key)]
+            if missing:
+                raise PersistenceError(f"Task payload is missing required field(s): {', '.join(missing)}.")
+
+        data = {key: payload[key] for key in cls.TASK_FIELDS if key in payload}
+        data.setdefault("enabled", True)
+        data.setdefault("notes", "")
+        data.setdefault("added_at", current_task_timestamp())
+        return RenderTask(**data)
+
+    @classmethod
+    def _looks_like_task_payload(cls, payload: object) -> bool:
+        return isinstance(payload, dict) and all(key in payload for key in cls.REQUIRED_TASK_FIELDS)
+
+    @staticmethod
+    def _int_or_default(value, default: int) -> int:
+        try:
+            return int(value)
+        except Exception:
+            return int(default)
+
+
+class RuntimeQueueCoordinator:
+    """Owns pending render queue operations independently from Tk widgets."""
+
+    def __init__(self, task_index_resolver, current_task_getter, status_callback, log_callback):
+        self._pending: "queue.Queue[RenderTask]" = queue.Queue()
+        self._task_index_resolver = task_index_resolver
+        self._current_task_getter = current_task_getter
+        self._status_callback = status_callback
+        self._log_callback = log_callback
+
+    def empty(self) -> bool:
+        return self._pending.empty()
+
+    def get(self, timeout: Optional[float] = None) -> RenderTask:
+        if timeout is None:
+            return self._pending.get()
+        return self._pending.get(timeout=timeout)
+
+    def task_identity_set(self) -> set:
+        queued_ids = set()
+        running_task = self._current_task_getter()
+        if running_task is not None:
+            queued_ids.add(id(running_task))
+
+        kept = []
+        while True:
+            try:
+                task = self._pending.get_nowait()
+            except queue.Empty:
+                break
+            kept.append(task)
+            queued_ids.add(id(task))
+
+        for task in kept:
+            self._pending.put(task)
+        return queued_ids
+
+    def enqueue_tasks(self, tasks: List[RenderTask], mark_queued: bool = True, log_prefix: str = "[+] Added ") -> bool:
+        if not tasks:
+            return False
+
+        queued_ids = self.task_identity_set()
+        count = 0
+        skipped_duplicates = 0
+        skipped_incomplete = 0
+
+        for task in tasks:
+            if not all([task.uproject, task.level, task.sequence, task.preset]):
+                skipped_incomplete += 1
+                continue
+            if id(task) in queued_ids:
+                skipped_duplicates += 1
+                continue
+
+            self._pending.put(task)
+            queued_ids.add(id(task))
+            if mark_queued:
+                task_index = self._task_index_resolver(task)
+                if task_index is not None:
+                    self._status_callback(task_index, "Queued")
+            count += 1
+
+        if count:
+            self._log_callback(f"{log_prefix}{count} task(s) to queue")
+        if skipped_duplicates:
+            self._log_callback(f"[Queue] Skipped {skipped_duplicates} task(s): already queued or rendering.")
+        if skipped_incomplete:
+            self._log_callback(f"[Queue] Skipped {skipped_incomplete} incomplete task(s).")
+
+        return bool(count or skipped_duplicates or skipped_incomplete)
+
+    def clear_pending(self, status_text: str = "Cancelled (queue)") -> int:
+        removed = 0
+        while True:
+            try:
+                task = self._pending.get_nowait()
+            except queue.Empty:
+                break
+            task_index = self._task_index_resolver(task)
+            if task_index is not None:
+                self._status_callback(task_index, status_text)
+            removed += 1
+
+        if removed:
+            self._log_callback(f"[Cancel] Removed {removed} queued task(s).")
+        return removed
+
+    def remove_tasks(self, tasks_to_remove: List[RenderTask]) -> int:
+        if not tasks_to_remove:
+            return 0
+
+        to_remove_ids = {id(task) for task in tasks_to_remove}
+        kept = []
+        removed = 0
+        while True:
+            try:
+                task = self._pending.get_nowait()
+            except queue.Empty:
+                break
+            if id(task) in to_remove_ids:
+                removed += 1
+                continue
+            kept.append(task)
+
+        for task in kept:
+            self._pending.put(task)
+
+        if removed:
+            self._log_callback(f"[Tasks] Removed {removed} queued item(s) from runtime queue.")
+        return removed
+
+
 # -------------------------------------------------
 # Task Editor (single window for selecting paths)
 # -------------------------------------------------
@@ -394,7 +628,12 @@ class MRQLauncher(tk.Tk):
         self.ui_queue: "queue.Queue[tuple]" = queue.Queue()
         self.state: List[dict] = []  # {status, progress, start, end}
         # --- New: shared runtime task queue and worker flag
-        self.runtime_q: "queue.Queue[RenderTask]" = queue.Queue()
+        self.runtime_queue = RuntimeQueueCoordinator(
+            self._find_task_index_by_identity,
+            self._current_running_task_for_queue,
+            self._set_status_async,
+            self._log,
+        )
         self.worker_running: bool = False
         self.render_action_buttons = []
         self.render_mode_hint_var = StringVar(value="Ready to render.")
@@ -1789,7 +2028,7 @@ class MRQLauncher(tk.Tk):
                 removed_tasks.append(t)
                 removed += 1
         # Also purge queued runtime entries for tasks that are being removed.
-        # Otherwise disabled+removed tasks can still render later from runtime_q.
+        # Otherwise disabled+removed tasks can still render later from runtime queue.
         self._remove_tasks_from_runtime_queue(removed_tasks)
         self.settings.tasks = new_tasks
         self.state = new_state
@@ -1832,46 +2071,8 @@ class MRQLauncher(tk.Tk):
         self._toggle_ready_disabled(sel)
 
     # Save/Load JSON (queue)
-    def load_from_json(self, path: str):
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        self.var_ue.set(data.get("ue_cmd", self.var_ue.get()))
-        self.settings.retries = int(data.get("retries", self.settings.retries))
-        self.settings.fail_policy = data.get("fail_policy", self.settings.fail_policy)
-        self.settings.kill_timeout_s = int(data.get("kill_timeout_s", self.settings.kill_timeout_s))
-        # render opts
-        self.settings.windowed = bool(data.get("windowed", self.settings.windowed))
-        self.settings.resx = int(data.get("resx", self.settings.resx))
-        self.settings.resy = int(data.get("resy", self.settings.resy))
-        self.settings.no_texture_streaming = bool(data.get("no_texture_streaming", self.settings.no_texture_streaming))
-        self.settings.extra_cli = data.get("extra_cli", self.settings.extra_cli)
-        self.settings.auto_minimal_on_render = bool(data.get("auto_minimal_on_render", self.settings.auto_minimal_on_render))
-
-        self.var_retries.set(self.settings.retries)
-        self.var_policy.set(self.settings.fail_policy)
-        self.var_kill_timeout.set(self.settings.kill_timeout_s)
-        self.var_windowed.set(self.settings.windowed)
-        self.var_resx.set(self.settings.resx)
-        self.var_resy.set(self.settings.resy)
-        self.var_nts.set(self.settings.no_texture_streaming)
-        self.var_auto_minimal.set(self.settings.auto_minimal_on_render)
-        self.var_extra.set(self.settings.extra_cli)
-        self.settings.tasks = [
-            RenderTask(**{
-                **it,
-                **({"enabled": True} if "enabled" not in it else {}),
-                **({"notes": ""} if "notes" not in it else {}),
-                **({"added_at": current_task_timestamp()} if "added_at" not in it else {}),
-            })
-            for it in data.get("tasks", [])
-        ]
-        self.state = [default_task_state() for _ in self.settings.tasks]
-        self.refresh_tree()
-        self._update_engine_labels()
-        self._update_command_preview()
-
-    def save_to_json(self, path: str):
-        data = {
+    def _current_persistence_config(self) -> dict:
+        return {
             "ue_cmd": self.var_ue.get().strip(),
             "retries": int(self.var_retries.get()),
             "fail_policy": self.var_policy.get(),
@@ -1882,10 +2083,45 @@ class MRQLauncher(tk.Tk):
             "no_texture_streaming": bool(self.var_nts.get()),
             "auto_minimal_on_render": bool(self.var_auto_minimal.get()),
             "extra_cli": self.var_extra.get().strip(),
-            "tasks": [asdict(t) for t in self.settings.tasks],
         }
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+
+    def _apply_persistence_config(self, config: dict) -> None:
+        self.var_ue.set(config["ue_cmd"])
+        self.settings.retries = int(config["retries"])
+        self.settings.fail_policy = config["fail_policy"]
+        self.settings.kill_timeout_s = int(config["kill_timeout_s"])
+        self.settings.windowed = bool(config["windowed"])
+        self.settings.resx = int(config["resx"])
+        self.settings.resy = int(config["resy"])
+        self.settings.no_texture_streaming = bool(config["no_texture_streaming"])
+        self.settings.extra_cli = config["extra_cli"]
+        self.settings.auto_minimal_on_render = bool(config["auto_minimal_on_render"])
+
+        self.var_retries.set(self.settings.retries)
+        self.var_policy.set(self.settings.fail_policy)
+        self.var_kill_timeout.set(self.settings.kill_timeout_s)
+        self.var_windowed.set(self.settings.windowed)
+        self.var_resx.set(self.settings.resx)
+        self.var_resy.set(self.settings.resy)
+        self.var_nts.set(self.settings.no_texture_streaming)
+        self.var_auto_minimal.set(self.settings.auto_minimal_on_render)
+        self.var_extra.set(self.settings.extra_cli)
+
+    def load_from_json(self, path: str):
+        try:
+            config, tasks = PersistenceRepository.load_queue(path, self.settings)
+        except PersistenceError as e:
+            messagebox.showerror("Load Queue", str(e))
+            return
+        self._apply_persistence_config(config)
+        self.settings.tasks = tasks
+        self.state = [default_task_state() for _ in self.settings.tasks]
+        self.refresh_tree()
+        self._update_engine_labels()
+        self._update_command_preview()
+
+    def save_to_json(self, path: str):
+        PersistenceRepository.save_queue(path, self._current_persistence_config(), self.settings.tasks)
 
     def load_json_dialog(self):
         p = filedialog.askopenfilename(title="Load tasks JSON", filetypes=[("JSON", "*.json")])
@@ -1905,29 +2141,12 @@ class MRQLauncher(tk.Tk):
         loaded = 0
         for p in paths:
             try:
-                with open(p, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                if isinstance(data, dict) and all(k in data for k in ("uproject","level","sequence","preset")):
-                    self.settings.tasks.append(RenderTask(**{
-                        **data,
-                        **({"enabled": True} if "enabled" not in data else {}),
-                        **({"notes": ""} if "notes" not in data else {}),
-                        **({"added_at": current_task_timestamp()} if "added_at" not in data else {}),
-                    }))
+                tasks = PersistenceRepository.load_task_file(p)
+                for task in tasks:
+                    self.settings.tasks.append(task)
                     self.state.append(default_task_state())
                     loaded += 1
-                elif isinstance(data, dict) and "tasks" in data:
-                    for it in data.get("tasks", []):
-                        if all(k in it for k in ("uproject","level","sequence","preset")):
-                            self.settings.tasks.append(RenderTask(**{
-                                **it,
-                                **({"enabled": True} if "enabled" not in it else {}),
-                                **({"notes": ""} if "notes" not in it else {}),
-                                **({"added_at": current_task_timestamp()} if "added_at" not in it else {}),
-                            }))
-                            self.state.append(default_task_state())
-                            loaded += 1
-            except Exception as e:
+            except PersistenceError as e:
                 messagebox.showerror("Load Task", f"{os.path.basename(p)}: {e}")
         if loaded:
             self.refresh_tree()
@@ -1961,9 +2180,7 @@ class MRQLauncher(tk.Tk):
             messagebox.showinfo("Save Task(s)", f"Saved {count} task file(s) to\n{folder}")
 
     def _save_task_to_file(self, t: RenderTask, path: str):
-        data = asdict(t)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        PersistenceRepository.save_task(path, t)
 
     # ---- Progress parsing (without regex) ----
     def _extract_progress(self, line: str) -> Optional[int]:
@@ -2145,7 +2362,7 @@ class MRQLauncher(tk.Tk):
         if not ue_cmd or not os.path.exists(ue_cmd):
             messagebox.showerror("Error", "Specify a valid path to UnrealEditor-Cmd.exe")
             return
-        if not tasks and self.runtime_q.empty():
+        if not tasks and self.runtime_queue.empty():
             if not self.worker_running:
                 messagebox.showinfo("Info", "No tasks to run")
             return
@@ -2173,10 +2390,10 @@ class MRQLauncher(tk.Tk):
             idx = 0
             skip_next_pending = 0
             while True:
-                if self.stop_all and self.runtime_q.empty():
+                if self.stop_all and self.runtime_queue.empty():
                     break
                 try:
-                    t = self.runtime_q.get(timeout=0.5)
+                    t = self.runtime_queue.get(timeout=0.5)
                 except queue.Empty:
                     continue
                 idx += 1
@@ -2398,103 +2615,27 @@ class MRQLauncher(tk.Tk):
         self._clear_pending_runtime_queue("Cancelled (queue)")
         self._log("[Cancel] Stop-all requested.")
 
-    def _task_identity_set_from_runtime_queue(self) -> set:
-        queued_ids = set()
-        running_task = None
+    def _current_running_task_for_queue(self) -> Optional[RenderTask]:
         if self._current_global_idx is not None and 0 <= self._current_global_idx < len(self.settings.tasks):
-            running_task = self.settings.tasks[self._current_global_idx]
-        if running_task is not None:
-            queued_ids.add(id(running_task))
+            return self.settings.tasks[self._current_global_idx]
+        return None
 
-        kept = []
-        while True:
-            try:
-                task = self.runtime_q.get_nowait()
-            except queue.Empty:
-                break
-            kept.append(task)
-            queued_ids.add(id(task))
-
-        for task in kept:
-            self.runtime_q.put(task)
-        return queued_ids
+    def _task_identity_set_from_runtime_queue(self) -> set:
+        return self.runtime_queue.task_identity_set()
 
     def _enqueue_tasks(self, tasks: List[RenderTask], mark_queued: bool = True, log_prefix: str = "[+] Added "):
-        """Enqueue a list of tasks into the runtime queue and optionally mark them as Queued."""
-        if not tasks:
-            return
-        queued_ids = self._task_identity_set_from_runtime_queue()
-        count = 0
-        skipped_duplicates = 0
-        skipped_incomplete = 0
-        for t in tasks:
-            # Skip incomplete tasks defensively
-            if not all([t.uproject, t.level, t.sequence, t.preset]):
-                skipped_incomplete += 1
-                continue
-            if id(t) in queued_ids:
-                skipped_duplicates += 1
-                continue
-            self.runtime_q.put(t)
-            queued_ids.add(id(t))
-            if mark_queued:
-                gi = self._find_task_index_by_identity(t)
-                if gi is not None:
-                    self._set_status_async(gi, "Queued")
-            count += 1
-        if count:
-            self._log(f"{log_prefix}{count} task(s) to queue")
-        if skipped_duplicates:
-            self._log(f"[Queue] Skipped {skipped_duplicates} task(s): already queued or rendering.")
-        if skipped_incomplete:
-            self._log(f"[Queue] Skipped {skipped_incomplete} incomplete task(s).")
-        if count or skipped_duplicates or skipped_incomplete:
-            # Ensure table reflects status changes
+        """Enqueue tasks through the runtime queue coordinator."""
+        changed = self.runtime_queue.enqueue_tasks(tasks, mark_queued=mark_queued, log_prefix=log_prefix)
+        if changed:
             self.refresh_tree()
 
     def _clear_pending_runtime_queue(self, status_text: str = "Cancelled (queue)"):
-        """
-        Remove tasks waiting in runtime_q and optionally update their visible status.
-        This prevents stale queued tasks from running during the next render session.
-        """
-        removed = 0
-        while True:
-            try:
-                t = self.runtime_q.get_nowait()
-            except queue.Empty:
-                break
-            gi = self._find_task_index_by_identity(t)
-            if gi is not None:
-                self._set_status_async(gi, status_text)
-            removed += 1
-        if removed:
-            self._log(f"[Cancel] Removed {removed} queued task(s).")
+        """Remove waiting tasks through the runtime queue coordinator."""
+        self.runtime_queue.clear_pending(status_text)
 
     def _remove_tasks_from_runtime_queue(self, tasks_to_remove: List[RenderTask]):
-        """
-        Remove specific task objects from the runtime queue by identity.
-        Used to keep pending runtime queue items aligned with table edits.
-        """
-        if not tasks_to_remove:
-            return
-        to_remove_ids = {id(t) for t in tasks_to_remove}
-        kept = []
-        removed = 0
-        while True:
-            try:
-                t = self.runtime_q.get_nowait()
-            except queue.Empty:
-                break
-            if id(t) in to_remove_ids:
-                removed += 1
-                continue
-            kept.append(t)
-
-        for t in kept:
-            self.runtime_q.put(t)
-
-        if removed:
-            self._log(f"[Tasks] Removed {removed} queued item(s) from runtime queue.")
+        """Remove specific pending task objects through the runtime queue coordinator."""
+        self.runtime_queue.remove_tasks(tasks_to_remove)
 
     def enqueue_selected_or_enabled(self):
         """
@@ -2510,7 +2651,7 @@ class MRQLauncher(tk.Tk):
             return
         self._enqueue_tasks(tasks)
         if not self.worker_running:
-            # Start worker without adding new items (they're already in runtime_q)
+            # Start worker without adding new items (they're already in the runtime queue)
             self._run_queue([])
 
     # Logging & UI queues (thread-safe)
