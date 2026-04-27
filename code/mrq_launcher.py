@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.7.7"
+APP_VERSION = "1.7.8"
 
 UI_THEME = {
     "bg": "#111318",
@@ -2968,13 +2968,18 @@ def run_qt_shell() -> int:
             self.queue_panel = None
             self.inspector_panel = None
             self.diagnostics_panel = None
+            self.minimal_header = None
             self.minimal_footer = None
+            self.queue_title_label = None
+            self.queue_toolbar_panel = None
             self.minimal_mode = False
             self._normal_geometry = None
             self.inspector_labels = {}
             self.setWindowTitle(f"MRQ Launcher (Qt Shell) ver {APP_VERSION}")
             self.resize(1280, 760)
-            self.setMinimumSize(900, 560)
+            self.full_minimum_size = (900, 560)
+            self.minimal_minimum_size = (560, 360)
+            self.setMinimumSize(*self.full_minimum_size)
             self._build_ui()
             self.refresh_queue_view()
             self.event_timer = QTimer(self)
@@ -2989,6 +2994,9 @@ def run_qt_shell() -> int:
             self.setCentralWidget(root)
             self.header_panel = self._build_header()
             root_layout.addWidget(self.header_panel)
+            self.minimal_header = self._build_minimal_header()
+            self.minimal_header.setVisible(False)
+            root_layout.addWidget(self.minimal_header)
             body = QHBoxLayout()
             body.setSpacing(8)
             self.queue_panel = self._build_queue_area()
@@ -3032,11 +3040,36 @@ def run_qt_shell() -> int:
             layout.addWidget(minimal_button)
             return panel
 
+        def _build_minimal_header(self) -> QFrame:
+            panel = self._panel()
+            layout = QHBoxLayout(panel)
+            title_block = QVBoxLayout()
+            title = QLabel("Minimal Mode")
+            title.setStyleSheet("font-size: 18px; font-weight: 700;")
+            subtitle = QLabel("Execution only view with compact columns.")
+            subtitle.setStyleSheet("color: #8a94a6;")
+            title_block.addWidget(title)
+            title_block.addWidget(subtitle)
+            layout.addLayout(title_block, 1)
+            stop_current = QPushButton("Stop Current")
+            stop_current.clicked.connect(self.cancel_current)
+            stop_all = QPushButton("Stop All")
+            stop_all.clicked.connect(self.cancel_all)
+            exit_button = QPushButton("Exit Minimal Mode")
+            exit_button.clicked.connect(self.exit_minimal_mode)
+            layout.addWidget(stop_current)
+            layout.addWidget(stop_all)
+            layout.addWidget(exit_button)
+            return panel
+
         def _build_queue_area(self) -> QFrame:
             panel = self._panel()
             layout = QVBoxLayout(panel)
-            layout.addWidget(QLabel("Render Queue"))
-            toolbar = QHBoxLayout()
+            self.queue_title_label = QLabel("Render Queue")
+            layout.addWidget(self.queue_title_label)
+            self.queue_toolbar_panel = QFrame(panel)
+            toolbar = QHBoxLayout(self.queue_toolbar_panel)
+            toolbar.setContentsMargins(0, 0, 0, 0)
             for text, callback in (
                 ("Add Job", self.load_task_dialog),
                 ("Edit", self._edit_not_connected),
@@ -3055,7 +3088,7 @@ def run_qt_shell() -> int:
             self.filter_edit.setPlaceholderText("Filter tasks")
             self.filter_edit.textChanged.connect(self.refresh_queue_view)
             toolbar.addWidget(self.filter_edit)
-            layout.addLayout(toolbar)
+            layout.addWidget(self.queue_toolbar_panel)
             self.table = QTableWidget(0, len(self.COLUMNS), panel)
             self.table.setHorizontalHeaderLabels(list(self.COLUMNS))
             self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -3139,19 +3172,11 @@ def run_qt_shell() -> int:
             self.minimal_progress_bar = QProgressBar(panel)
             self.minimal_progress_bar.setRange(0, 100)
             self.minimal_progress_bar.setValue(0)
-            stop_current = QPushButton("Stop Current")
-            stop_current.clicked.connect(self.cancel_current)
-            stop_all = QPushButton("Stop All")
-            stop_all.clicked.connect(self.cancel_all)
-            exit_button = QPushButton("Exit Minimal Mode")
-            exit_button.clicked.connect(self.exit_minimal_mode)
+            layout.addWidget(self.minimal_session_time_label)
+            layout.addWidget(QLabel("•"))
             layout.addWidget(self.minimal_current_task_label)
             layout.addWidget(self.minimal_current_status_label)
             layout.addWidget(self.minimal_progress_bar, 1)
-            layout.addWidget(self.minimal_session_time_label)
-            layout.addWidget(stop_current)
-            layout.addWidget(stop_all)
-            layout.addWidget(exit_button)
             return panel
 
         def enter_minimal_mode(self) -> None:
@@ -3159,31 +3184,48 @@ def run_qt_shell() -> int:
                 return
             self.minimal_mode = True
             self._normal_geometry = self.saveGeometry()
+            self.setMinimumSize(*self.minimal_minimum_size)
             if self.header_panel:
                 self.header_panel.setVisible(False)
+            if self.minimal_header:
+                self.minimal_header.setVisible(True)
             if self.inspector_panel:
                 self.inspector_panel.setVisible(False)
             if self.diagnostics_panel:
                 self.diagnostics_panel.setVisible(False)
+            if self.queue_title_label:
+                self.queue_title_label.setVisible(False)
+            if self.queue_toolbar_panel:
+                self.queue_toolbar_panel.setVisible(False)
             if self.minimal_footer:
                 self.minimal_footer.setVisible(True)
+            if self.statusBar():
+                self.statusBar().setVisible(False)
             self._set_minimal_columns(True)
             self.refresh_queue_view()
-            self.resize(max(760, self.width()), max(420, min(self.height(), 620)))
-            self.statusBar().showMessage("Minimal Mode: execution-only view")
+            self._resize_minimal_window()
 
         def exit_minimal_mode(self) -> None:
             if not self.minimal_mode:
                 return
             self.minimal_mode = False
+            self.setMinimumSize(*self.full_minimum_size)
             if self.header_panel:
                 self.header_panel.setVisible(True)
+            if self.minimal_header:
+                self.minimal_header.setVisible(False)
             if self.inspector_panel:
                 self.inspector_panel.setVisible(True)
             if self.diagnostics_panel:
                 self.diagnostics_panel.setVisible(True)
+            if self.queue_title_label:
+                self.queue_title_label.setVisible(True)
+            if self.queue_toolbar_panel:
+                self.queue_toolbar_panel.setVisible(True)
             if self.minimal_footer:
                 self.minimal_footer.setVisible(False)
+            if self.statusBar():
+                self.statusBar().setVisible(True)
             self._set_minimal_columns(False)
             self.refresh_queue_view()
             if self._normal_geometry:
@@ -3201,6 +3243,13 @@ def run_qt_shell() -> int:
                 return
             for column in (5, 6):
                 self.table.setColumnHidden(column, enabled)
+
+        def _resize_minimal_window(self) -> None:
+            visible_rows = self.table.rowCount() if self.table else 0
+            row_count = max(6, min(visible_rows, 12))
+            width = 820
+            height = max(360, min(620, 190 + row_count * 30))
+            self.resize(width, height)
 
         def _ensure_state(self) -> None:
             while len(self.state) < len(self.settings.tasks):
