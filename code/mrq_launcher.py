@@ -17,7 +17,7 @@ from tkinter import ttk
 # -------------------------------------------------
 # App meta
 # -------------------------------------------------
-APP_VERSION = "1.4.4"
+APP_VERSION = "1.4.5"
 # -------------------------------------------------
 # Helpers
 # -------------------------------------------------
@@ -580,14 +580,25 @@ class MRQLauncher(tk.Tk):
     def set_enabled_all(self, val: bool):
         for t in self.settings.tasks:
             t.enabled = val
+        # If tasks are being disabled, also remove their pending queued copies.
+        # Otherwise already-enqueued items can still run despite being unchecked.
+        if not val:
+            self._remove_tasks_from_runtime_queue(self.settings.tasks)
         self.refresh_tree()
 
     def toggle_selected(self):
         sel = self._selected_indices()
         if not sel:
             return
+        disabled_now = []
         for idx in sel:
-            self.settings.tasks[idx].enabled = not self.settings.tasks[idx].enabled
+            t = self.settings.tasks[idx]
+            t.enabled = not t.enabled
+            if not t.enabled:
+                disabled_now.append(t)
+        if disabled_now:
+            # Keep runtime queue aligned with the visible enabled state.
+            self._remove_tasks_from_runtime_queue(disabled_now)
         self.refresh_tree()
 
     # Save/Load JSON (queue)
