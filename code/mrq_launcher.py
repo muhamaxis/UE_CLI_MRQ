@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.6.2"
+APP_VERSION = "1.6.3"
 
 UI_THEME = {
     "bg": "#111318",
@@ -352,6 +352,7 @@ class MRQLauncher(tk.Tk):
         # Window title with version
         self.title(f"MRQ Launcher (CLI) ver {APP_VERSION}")
         self.geometry(f"{self._s(1480)}x{self._s(920)}")
+        self.resizable(True, True)
         self.minsize(self._s(1280), self._s(760))
         self.full_mode_minsize = (self._s(1280), self._s(760))
         self.minimal_mode_minsize = (self._s(560), self._s(360))
@@ -1068,7 +1069,7 @@ class MRQLauncher(tk.Tk):
                 width = min(max(width, self._s(96)), self._s(132))
             self.tree.column(name, width=width, anchor="w", stretch=False)
 
-    def _compute_minimal_geometry(self) -> str:
+    def _compute_minimal_width(self) -> int:
         active_columns = self._get_active_tree_columns()
         total_width = sum(int(float(self.tree.column(name, "width"))) for name in active_columns)
         total_width += self._s(56)
@@ -1079,14 +1080,25 @@ class MRQLauncher(tk.Tk):
 
         target_width = max(total_width, footer_width)
         screen_width = max(self.winfo_screenwidth() - self._s(80), self.minimal_mode_minsize[0])
-        target_width = max(self.minimal_mode_minsize[0], min(target_width, screen_width))
+        return max(self.minimal_mode_minsize[0], min(target_width, screen_width))
 
+    def _compute_minimal_height(self) -> int:
         visible_rows = max(8, min(len(self.tree.get_children()), 14))
         row_height = self._s(30)
         chrome_height = self._s(220)
         screen_height = max(self.winfo_screenheight() - self._s(120), self.minimal_mode_minsize[1])
-        target_height = max(self.minimal_mode_minsize[1], min(chrome_height + visible_rows * row_height, screen_height))
-        return f"{target_width}x{target_height}"
+        return max(self.minimal_mode_minsize[1], min(chrome_height + visible_rows * row_height, screen_height))
+
+    def _compute_minimal_geometry(self) -> str:
+        return f"{self._compute_minimal_width()}x{self._compute_minimal_height()}"
+
+    def _fit_minimal_width_only(self):
+        if not self.minimal_mode:
+            return
+        self.update_idletasks()
+        target_width = self._compute_minimal_width()
+        current_height = max(self.winfo_height(), self.minimal_mode_minsize[1])
+        self.geometry(f"{target_width}x{current_height}")
 
     def enter_minimal_mode(self):
         if self.minimal_mode:
@@ -2422,7 +2434,7 @@ class MRQLauncher(tk.Tk):
             self.session_total_var.set(f"Session total: {h:02d}:{m:02d}:{s:02d}")
             if self.minimal_mode and hasattr(self, "tree"):
                 self.after_idle(self._autosize_tree_columns)
-                self.after_idle(lambda: self.geometry(self._compute_minimal_geometry()))
+                self.after_idle(self._fit_minimal_width_only)
         finally:
             # Re-schedule periodic update
             self.after(500, self._tick_session_total)
