@@ -18,7 +18,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.5.0"
+APP_VERSION = "1.5.1"
 
 UI_THEME = {
     "bg": "#111318",
@@ -348,6 +348,15 @@ class MRQLauncher(tk.Tk):
             arrowcolor=UI_THEME["text"],
         )
 
+        style.configure(
+            "Dark.Horizontal.TProgressbar",
+            troughcolor=UI_THEME["entry"],
+            background=UI_THEME["accent"],
+            bordercolor=UI_THEME["border"],
+            lightcolor=UI_THEME["accent"],
+            darkcolor=UI_THEME["accent"],
+        )
+
     def _build_menu(self):
         menubar = tk.Menu(self, bg=UI_THEME["panel"], fg=UI_THEME["text"], activebackground=UI_THEME["panel_soft"], activeforeground=UI_THEME["text"])
 
@@ -517,6 +526,20 @@ class MRQLauncher(tk.Tk):
         self.extra_entry = self._make_entry(opts, textvariable=self.var_extra, width=28)
         self.extra_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(6, 0))
 
+        tracked_vars = (
+            self.var_ue,
+            self.var_retries,
+            self.var_policy,
+            self.var_kill_timeout,
+            self.var_windowed,
+            self.var_resx,
+            self.var_resy,
+            self.var_nts,
+            self.var_extra,
+        )
+        for tracked in tracked_vars:
+            tracked.trace_add("write", self._on_runtime_options_changed)
+
     def _build_sidebar(self, parent):
         self._section_title(parent, "Navigation", "Production workspace")
 
@@ -569,6 +592,11 @@ class MRQLauncher(tk.Tk):
         self.filter_entry = self._make_entry(right, textvariable=self.var_task_filter, width=28)
         self.filter_entry.pack(side=tk.LEFT)
 
+        stats = tk.Frame(parent, bg=UI_THEME["panel"])
+        stats.pack(fill=tk.X, pady=(0, 10))
+        self.queue_stats_var = StringVar(value="Total: 0 | Visible: 0 | Enabled: 0 | Selected: 0")
+        tk.Label(stats, textvariable=self.queue_stats_var, bg=UI_THEME["panel"], fg=UI_THEME["muted"], font=("Segoe UI", 9)).pack(side=tk.LEFT)
+
         tree_shell = tk.Frame(parent, bg=UI_THEME["panel"])
         tree_shell.pack(fill=tk.BOTH, expand=True)
 
@@ -576,16 +604,24 @@ class MRQLauncher(tk.Tk):
         self.tree = ttk.Treeview(tree_shell, columns=cols, show="headings", selectmode="extended")
         for name, title, width, anchor in (
             ("enabled", "On", 48, "center"),
-            ("job", "Job", 160, "w"),
-            ("level", "Level", 180, "w"),
-            ("sequence", "Sequence", 180, "w"),
-            ("preset", "Preset", 180, "w"),
+            ("job", "Job", 180, "w"),
+            ("level", "Level", 190, "w"),
+            ("sequence", "Sequence", 190, "w"),
+            ("preset", "Preset", 190, "w"),
             ("status", "Status", 170, "w"),
-            ("output", "Output", 150, "w"),
-            ("notes", "Notes", 220, "w"),
+            ("output", "Output", 170, "w"),
+            ("notes", "Notes", 240, "w"),
         ):
             self.tree.heading(name, text=title)
             self.tree.column(name, width=width, anchor=anchor, stretch=(name != "enabled"))
+
+        self.tree.tag_configure("status_ready", foreground=UI_THEME["text"])
+        self.tree.tag_configure("status_queued", foreground="#FFD28A")
+        self.tree.tag_configure("status_rendering", foreground="#A8D1FF")
+        self.tree.tag_configure("status_done", foreground="#8BE2B5")
+        self.tree.tag_configure("status_failed", foreground="#FF9AA9")
+        self.tree.tag_configure("status_disabled", foreground=UI_THEME["muted"])
+        self.tree.tag_configure("status_skipped", foreground="#D7C7FF")
 
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.tree.bind("<Double-1>", self.on_tree_dblclick)
@@ -667,6 +703,11 @@ class MRQLauncher(tk.Tk):
 
         tk.Label(parent, textvariable=self.inspector_vars["validation"], bg=UI_THEME["panel"], fg=UI_THEME["text"], font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(6, 10))
 
+        quick = tk.Frame(parent, bg=UI_THEME["panel"])
+        quick.pack(fill=tk.X, pady=(0, 10))
+        self._make_button(quick, "Copy Command", self.copy_command_preview).pack(fill=tk.X, pady=(0, 6))
+        self._make_button(quick, "Open Output Folder", self.open_selected_output_dir).pack(fill=tk.X)
+
         actions = tk.Frame(parent, bg=UI_THEME["panel"])
         actions.pack(fill=tk.X, pady=(8, 0))
         self._make_button(actions, "Edit Selected", self.edit_task, variant="primary").pack(fill=tk.X, pady=(0, 6))
@@ -694,16 +735,38 @@ class MRQLauncher(tk.Tk):
         info_row = tk.Frame(parent, bg=UI_THEME["panel"])
         info_row.pack(fill=tk.X, pady=(12, 10))
         self.current_task_var = StringVar(value="Current task: Idle")
-        tk.Label(info_row, textvariable=self.current_task_var, bg=UI_THEME["panel"], fg=UI_THEME["text"], font=("Segoe UI", 10, "bold")).pack(side=tk.LEFT)
-        self._session_total_label = tk.Label(info_row, text="Session total: 00:00:00", bg=UI_THEME["panel"], fg=UI_THEME["muted"], font=("Segoe UI", 10))
-        self._session_total_label.pack(side=tk.RIGHT)
+        self.current_status_var = StringVar(value="Status: Idle")
+        self.current_progress_var = StringVar(value="0%")
+        self.render_progress_value = tk.DoubleVar(value=0.0)
+
+        left_info = tk.Frame(info_row, bg=UI_THEME["panel"])
+        left_info.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        tk.Label(left_info, textvariable=self.current_task_var, bg=UI_THEME["panel"], fg=UI_THEME["text"], font=("Segoe UI", 10, "bold")).pack(side=tk.LEFT)
+        tk.Label(left_info, textvariable=self.current_status_var, bg=UI_THEME["panel"], fg=UI_THEME["muted"], font=("Segoe UI", 10), padx=12).pack(side=tk.LEFT)
+
+        progress_shell = tk.Frame(info_row, bg=UI_THEME["panel"])
+        progress_shell.pack(side=tk.RIGHT)
+        self.progress_bar = ttk.Progressbar(
+            progress_shell,
+            variable=self.render_progress_value,
+            maximum=100.0,
+            length=220,
+            style="Dark.Horizontal.TProgressbar",
+        )
+        self.progress_bar.pack(side=tk.LEFT)
+        tk.Label(progress_shell, textvariable=self.current_progress_var, bg=UI_THEME["panel"], fg=UI_THEME["text"], font=("Segoe UI", 9, "bold"), padx=10).pack(side=tk.LEFT)
+        self._session_total_label = tk.Label(progress_shell, text="Session total: 00:00:00", bg=UI_THEME["panel"], fg=UI_THEME["muted"], font=("Segoe UI", 10))
+        self._session_total_label.pack(side=tk.LEFT, padx=(6, 0))
 
         split = tk.PanedWindow(parent, orient=tk.HORIZONTAL, sashwidth=6, bg=UI_THEME["panel"], bd=0, relief=tk.FLAT)
         split.pack(fill=tk.BOTH, expand=True)
 
         cmd_panel = self._create_panel(split, padx=10, pady=10)
         split.add(cmd_panel, minsize=320)
-        tk.Label(cmd_panel, text="Command Preview", bg=UI_THEME["panel"], fg=UI_THEME["text"], font=("Segoe UI", 11, "bold")).pack(anchor="w")
+        cmd_top = tk.Frame(cmd_panel, bg=UI_THEME["panel"])
+        cmd_top.pack(fill=tk.X)
+        tk.Label(cmd_top, text="Command Preview", bg=UI_THEME["panel"], fg=UI_THEME["text"], font=("Segoe UI", 11, "bold")).pack(side=tk.LEFT, anchor="w")
+        self._make_button(cmd_top, "Copy", self.copy_command_preview, width=10).pack(side=tk.RIGHT)
         self.command_preview = tk.Text(
             cmd_panel,
             height=8,
@@ -810,8 +873,79 @@ class MRQLauncher(tk.Tk):
             cmd += shlex.split(extra)
         if task.output_dir:
             cmd.append(f'-OutputDirectory="{task.output_dir}"')
-        return " \
-".join(cmd)
+        return " \\\n".join(cmd)
+
+    def _status_tag_for_index(self, idx: int) -> str:
+        if not (0 <= idx < len(self.settings.tasks)):
+            return "status_ready"
+        task = self.settings.tasks[idx]
+        status = self.state[idx].get("status", "Ready") if 0 <= idx < len(self.state) else "Ready"
+        if not task.enabled:
+            return "status_disabled"
+        if status.startswith("Failed") or status.startswith("Cancelled"):
+            return "status_failed"
+        if status.startswith("Done"):
+            return "status_done"
+        if status.startswith("Rendering"):
+            return "status_rendering"
+        if status.startswith("Skipped"):
+            return "status_skipped"
+        if status == "Queued":
+            return "status_queued"
+        return "status_ready"
+
+    def _set_tree_item(self, idx: int):
+        if self.tree.exists(str(idx)):
+            self.tree.item(str(idx), values=self._row_values(idx), tags=(self._status_tag_for_index(idx),))
+
+    def _update_queue_stats(self):
+        if not hasattr(self, "queue_stats_var"):
+            return
+        total = len(self.settings.tasks)
+        visible = len(self.tree.get_children()) if hasattr(self, "tree") else 0
+        enabled = sum(1 for t in self.settings.tasks if t.enabled)
+        selected = len(self.tree.selection()) if hasattr(self, "tree") else 0
+        self.queue_stats_var.set(f"Total: {total} | Visible: {visible} | Enabled: {enabled} | Selected: {selected}")
+
+    def _on_runtime_options_changed(self, *_args):
+        if hasattr(self, "sidebar_engine_state"):
+            self._update_engine_labels()
+        if self.command_preview is not None:
+            self._update_command_preview()
+
+    def copy_command_preview(self):
+        task = self._selected_task()
+        if task is None and self._current_global_idx is not None and 0 <= self._current_global_idx < len(self.settings.tasks):
+            task = self.settings.tasks[self._current_global_idx]
+        content = "Select a task to inspect the generated command line."
+        if task is not None:
+            content = self._build_command_preview_for_task(task)
+        self.clipboard_clear()
+        self.clipboard_append(content)
+        self.update_idletasks()
+        self._log("[UI] Command preview copied to clipboard.")
+
+    def open_selected_output_dir(self):
+        task = self._selected_task()
+        if task is None:
+            self._log("[UI] Select a task first.")
+            return
+        path = (task.output_dir or "").strip()
+        if not path:
+            self._log("[UI] Selected task uses preset default output directory.")
+            return
+        if not os.path.isdir(path):
+            self._log(f"[UI] Output directory not found: {path}")
+            return
+        try:
+            if os.name == "nt":
+                os.startfile(path)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", path])
+            else:
+                subprocess.Popen(["xdg-open", path])
+        except Exception as e:
+            self._log(f"[UI] Failed to open output directory: {e}")
 
     def _update_inspector(self):
         if not self.inspector_vars:
@@ -863,18 +997,41 @@ class MRQLauncher(tk.Tk):
         statuses = [s.get("status", "Ready") for s in self.state]
         queued = sum(1 for s in statuses if s == "Queued")
         running = sum(1 for s in statuses if s.startswith("Rendering"))
-        failed = sum(1 for s in statuses if s.startswith("Failed"))
+        failed = sum(1 for s in statuses if s.startswith("Failed") or s.startswith("Cancelled"))
         done = sum(1 for s in statuses if s.startswith("Done"))
 
         overall = "Running" if self.worker_running or (self.current_process and self.current_process.poll() is None) else "Idle"
         self.status_overall_var.set(f"State: {overall}")
         self.status_counts_var.set(f"Queued: {queued} | Running: {running} | Failed: {failed} | Done: {done}")
 
+        task_idx = None
         if self._current_global_idx is not None and 0 <= self._current_global_idx < len(self.settings.tasks):
-            task = self.settings.tasks[self._current_global_idx]
+            task_idx = self._current_global_idx
+        else:
+            task_idx = self._selected_task_index()
+
+        if task_idx is not None and 0 <= task_idx < len(self.settings.tasks):
+            task = self.settings.tasks[task_idx]
+            state = self.state[task_idx] if 0 <= task_idx < len(self.state) else default_task_state()
             self.current_task_var.set(f"Current task: {soft_name(task.sequence)}")
+            self.current_status_var.set(f"Status: {state.get('status', 'Ready')}")
+            progress = state.get("progress")
+            if progress is None:
+                if state.get("status", "").startswith("Done"):
+                    progress = 100
+                elif state.get("status", "") == "Queued":
+                    progress = 0
+            if progress is None:
+                progress = 0
+            self.render_progress_value.set(float(progress))
+            self.current_progress_var.set(f"{int(progress)}%")
         else:
             self.current_task_var.set("Current task: Idle")
+            self.current_status_var.set("Status: Idle")
+            self.render_progress_value.set(0.0)
+            self.current_progress_var.set("0%")
+
+        self._update_queue_stats()
 
     def _on_tree_selection_changed(self, _event=None):
         self._update_inspector()
@@ -951,7 +1108,7 @@ class MRQLauncher(tk.Tk):
             ]).lower()
             if query and query not in haystack:
                 continue
-            self.tree.insert("", "end", iid=str(i), values=self._row_values(i))
+            self.tree.insert("", "end", iid=str(i), values=self._row_values(i), tags=(self._status_tag_for_index(i),))
 
         visible_selection = [iid for iid in previous_selection if self.tree.exists(iid)]
         if visible_selection:
@@ -1517,6 +1674,9 @@ class MRQLauncher(tk.Tk):
                                         break
                                     self._log(line.rstrip())
                                     log_fp.write(line)
+                                    progress = self._extract_progress(line)
+                                    if progress is not None and gidx is not None:
+                                        self.ui_queue.put(("set_progress", gidx, progress))
                         except Exception as ex:
                             self._log(f"[pump] {ex}")
                         finally:
@@ -1728,14 +1888,21 @@ class MRQLauncher(tk.Tk):
                     _, idx, text = item
                     if 0 <= idx < len(self.state):
                         self.state[idx]["status"] = text
-                        if self.tree.exists(str(idx)):
-                            self.tree.item(str(idx), values=self._row_values(idx))
+                        if text.startswith("Done"):
+                            self.state[idx]["progress"] = 100
+                        elif text in ("Queued", "Ready", "Cancelled", "Cancelled (queue)"):
+                            self.state[idx]["progress"] = 0
+                        self._set_tree_item(idx)
                         status_changed = True
                 elif kind == "update_row":
                     _, idx = item
-                    if self.tree.exists(str(idx)):
-                        self.tree.item(str(idx), values=self._row_values(idx))
+                    self._set_tree_item(idx)
                     status_changed = True
+                elif kind == "set_progress":
+                    _, idx, progress = item
+                    if 0 <= idx < len(self.state):
+                        self.state[idx]["progress"] = progress
+                        status_changed = True
         except queue.Empty:
             pass
 
