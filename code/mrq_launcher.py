@@ -18,7 +18,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.5.1"
+APP_VERSION = "1.5.2"
 
 UI_THEME = {
     "bg": "#111318",
@@ -82,6 +82,31 @@ def soft_name(soft_path: str) -> str:
 
 def default_task_state() -> dict:
     return {"status": "Ready", "progress": None, "start": None, "end": None}
+
+
+def configure_windows_dpi_awareness() -> None:
+    """Enable system DPI awareness on Windows before creating the Tk root."""
+    if sys.platform != "win32":
+        return
+    try:
+        ctypes = __import__("ctypes")
+        user32 = ctypes.windll.user32
+        try:
+            user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
+            return
+        except Exception:
+            pass
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)
+            return
+        except Exception:
+            pass
+        try:
+            user32.SetProcessDPIAware()
+        except Exception:
+            pass
+    except Exception:
+        pass
 
 # -------------------------------------------------
 # Data
@@ -221,11 +246,14 @@ class TaskEditor(tk.Toplevel):
 
 class MRQLauncher(tk.Tk):
     def __init__(self):
+        configure_windows_dpi_awareness()
         super().__init__()
+        self.ui_scale = self._detect_ui_scale()
+        self._apply_tk_scaling()
         # Window title with version
         self.title(f"MRQ Launcher (CLI) ver {APP_VERSION}")
-        self.geometry("1480x920")
-        self.minsize(1280, 760)
+        self.geometry(f"{self._s(1480)}x{self._s(920)}")
+        self.minsize(self._s(1280), self._s(760))
         self.settings = AppSettings()
         self.current_process: Optional[subprocess.Popen] = None
         self._current_global_idx: Optional[int] = None
@@ -246,6 +274,23 @@ class MRQLauncher(tk.Tk):
         self.after(500, self._tick_session_total)
 
 
+    def _detect_ui_scale(self) -> float:
+        try:
+            dpi = float(self.winfo_fpixels("1i"))
+            return max(1.0, min(3.0, dpi / 96.0))
+        except Exception:
+            return 1.0
+
+    def _apply_tk_scaling(self) -> None:
+        try:
+            dpi = 96.0 * self.ui_scale
+            self.tk.call("tk", "scaling", dpi / 72.0)
+        except Exception:
+            pass
+
+    def _s(self, value: int) -> int:
+        return max(1, int(round(value * self.ui_scale)))
+
     # UI
     def _build_ui(self):
         self._configure_styles()
@@ -255,38 +300,30 @@ class MRQLauncher(tk.Tk):
         shell.pack(fill=tk.BOTH, expand=True)
 
         self.header_panel = self._create_panel(shell, padx=14, pady=12)
-        self.header_panel.pack(fill=tk.X, padx=12, pady=(12, 8))
+        self.header_panel.pack(fill=tk.X, padx=self._s(12), pady=(self._s(12), self._s(8)))
         self._build_header(self.header_panel)
 
         body = tk.Frame(shell, bg=UI_THEME["bg"])
-        body.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 8))
+        body.pack(fill=tk.BOTH, expand=True, padx=self._s(12), pady=(0, self._s(8)))
 
-        self.sidebar_panel = self._create_panel(body, width=180, padx=12, pady=12)
-        self.sidebar_panel.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 8))
-        self.sidebar_panel.pack_propagate(False)
-        self._build_sidebar(self.sidebar_panel)
-
-        main_area = tk.Frame(body, bg=UI_THEME["bg"])
-        main_area.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-        upper = tk.Frame(main_area, bg=UI_THEME["bg"])
+        upper = tk.Frame(body, bg=UI_THEME["bg"])
         upper.pack(fill=tk.BOTH, expand=True)
 
         self.queue_panel = self._create_panel(upper, padx=12, pady=12)
-        self.queue_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 8))
+        self.queue_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, self._s(8)))
         self._build_queue_workspace(self.queue_panel)
 
-        self.inspector_panel = self._create_panel(upper, width=320, padx=12, pady=12)
+        self.inspector_panel = self._create_panel(upper, width=self._s(360), padx=12, pady=12)
         self.inspector_panel.pack(side=tk.RIGHT, fill=tk.Y)
         self.inspector_panel.pack_propagate(False)
         self._build_inspector_panel(self.inspector_panel)
 
-        self.bottom_panel = self._create_panel(main_area, padx=12, pady=12)
-        self.bottom_panel.pack(fill=tk.BOTH, expand=False)
+        self.bottom_panel = self._create_panel(body, padx=12, pady=12)
+        self.bottom_panel.pack(fill=tk.BOTH, expand=False, pady=(self._s(8), 0))
         self._build_bottom_panel(self.bottom_panel)
 
         self.status_bar = tk.Frame(shell, bg=UI_THEME["panel_alt"], highlightthickness=1, highlightbackground=UI_THEME["border"])
-        self.status_bar.pack(fill=tk.X, padx=12, pady=(0, 12))
+        self.status_bar.pack(fill=tk.X, padx=self._s(12), pady=(0, self._s(12)))
         self._build_status_bar(self.status_bar)
 
         self.refresh_tree()
@@ -312,7 +349,7 @@ class MRQLauncher(tk.Tk):
             bordercolor=UI_THEME["border"],
             lightcolor=UI_THEME["border"],
             darkcolor=UI_THEME["border"],
-            rowheight=28,
+            rowheight=self._s(30),
             relief="flat",
         )
         style.map(
@@ -326,7 +363,7 @@ class MRQLauncher(tk.Tk):
             foreground=UI_THEME["text"],
             bordercolor=UI_THEME["border"],
             relief="flat",
-            padding=(8, 6),
+            padding=(self._s(8), self._s(6)),
         )
         style.map("Treeview.Heading", background=[("active", UI_THEME["panel_alt"])])
 
@@ -405,8 +442,8 @@ class MRQLauncher(tk.Tk):
             bg=UI_THEME["panel"],
             highlightthickness=1,
             highlightbackground=UI_THEME["border"],
-            padx=padx,
-            pady=pady,
+            padx=self._s(padx),
+            pady=self._s(pady),
         )
         if width is not None:
             frame.configure(width=width)
@@ -432,8 +469,8 @@ class MRQLauncher(tk.Tk):
             activeforeground=fg,
             relief=tk.FLAT,
             bd=0,
-            padx=10,
-            pady=7,
+            padx=self._s(10),
+            pady=self._s(7),
             highlightthickness=0,
             cursor="hand2",
         )
@@ -589,7 +626,7 @@ class MRQLauncher(tk.Tk):
         tk.Label(right, text="Filter", bg=UI_THEME["panel"], fg=UI_THEME["muted"], font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(0, 8))
         self.var_task_filter = StringVar()
         self.var_task_filter.trace_add("write", lambda *_: self.refresh_tree())
-        self.filter_entry = self._make_entry(right, textvariable=self.var_task_filter, width=28)
+        self.filter_entry = self._make_entry(right, textvariable=self.var_task_filter, width=24)
         self.filter_entry.pack(side=tk.LEFT)
 
         stats = tk.Frame(parent, bg=UI_THEME["panel"])
@@ -600,17 +637,16 @@ class MRQLauncher(tk.Tk):
         tree_shell = tk.Frame(parent, bg=UI_THEME["panel"])
         tree_shell.pack(fill=tk.BOTH, expand=True)
 
-        cols = ("enabled", "job", "level", "sequence", "preset", "status", "output", "notes")
+        cols = ("enabled", "job", "level", "sequence", "preset", "status", "notes")
         self.tree = ttk.Treeview(tree_shell, columns=cols, show="headings", selectmode="extended")
         for name, title, width, anchor in (
-            ("enabled", "On", 48, "center"),
-            ("job", "Job", 180, "w"),
-            ("level", "Level", 190, "w"),
-            ("sequence", "Sequence", 190, "w"),
-            ("preset", "Preset", 190, "w"),
-            ("status", "Status", 170, "w"),
-            ("output", "Output", 170, "w"),
-            ("notes", "Notes", 240, "w"),
+            ("enabled", "On", self._s(48), "center"),
+            ("job", "Job", self._s(210), "w"),
+            ("level", "Level", self._s(180), "w"),
+            ("sequence", "Sequence", self._s(200), "w"),
+            ("preset", "Preset", self._s(280), "w"),
+            ("status", "Status", self._s(180), "w"),
+            ("notes", "Notes", self._s(280), "w"),
         ):
             self.tree.heading(name, text=title)
             self.tree.column(name, width=width, anchor=anchor, stretch=(name != "enabled"))
@@ -692,7 +728,7 @@ class MRQLauncher(tk.Tk):
                 fg=UI_THEME["text"],
                 font=("Segoe UI", 9),
                 justify=tk.LEFT,
-                wraplength=260,
+                wraplength=self._s(300),
                 padx=8,
                 pady=6,
                 anchor="w",
@@ -750,7 +786,7 @@ class MRQLauncher(tk.Tk):
             progress_shell,
             variable=self.render_progress_value,
             maximum=100.0,
-            length=220,
+            length=self._s(240),
             style="Dark.Horizontal.TProgressbar",
         )
         self.progress_bar.pack(side=tk.LEFT)
@@ -762,7 +798,7 @@ class MRQLauncher(tk.Tk):
         split.pack(fill=tk.BOTH, expand=True)
 
         cmd_panel = self._create_panel(split, padx=10, pady=10)
-        split.add(cmd_panel, minsize=320)
+        split.add(cmd_panel, minsize=self._s(360))
         cmd_top = tk.Frame(cmd_panel, bg=UI_THEME["panel"])
         cmd_top.pack(fill=tk.X)
         tk.Label(cmd_top, text="Command Preview", bg=UI_THEME["panel"], fg=UI_THEME["text"], font=("Segoe UI", 11, "bold")).pack(side=tk.LEFT, anchor="w")
@@ -784,7 +820,7 @@ class MRQLauncher(tk.Tk):
         self.command_preview.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
 
         log_panel = self._create_panel(split, padx=10, pady=10)
-        split.add(log_panel, minsize=420)
+        split.add(log_panel, minsize=self._s(460))
         tk.Label(log_panel, text="Log", bg=UI_THEME["panel"], fg=UI_THEME["text"], font=("Segoe UI", 11, "bold")).pack(anchor="w")
         self.log = tk.Text(
             log_panel,
@@ -826,12 +862,6 @@ class MRQLauncher(tk.Tk):
         ue_path = self.var_ue.get().strip() if hasattr(self, "var_ue") else self.settings.ue_cmd
         detected = "Detected" if ue_path and os.path.exists(ue_path) else "Missing"
         version = self._detect_ue_version()
-        if hasattr(self, "sidebar_engine_state"):
-            self.sidebar_engine_state.set(detected)
-        if hasattr(self, "sidebar_engine_version"):
-            self.sidebar_engine_version.set(f"Version: {version}")
-        if hasattr(self, "sidebar_engine_path"):
-            self.sidebar_engine_path.set(ue_path or "Path not set")
         if hasattr(self, "status_engine_var"):
             self.status_engine_var.set(f"Engine: {version}")
 
@@ -908,8 +938,7 @@ class MRQLauncher(tk.Tk):
         self.queue_stats_var.set(f"Total: {total} | Visible: {visible} | Enabled: {enabled} | Selected: {selected}")
 
     def _on_runtime_options_changed(self, *_args):
-        if hasattr(self, "sidebar_engine_state"):
-            self._update_engine_labels()
+        self._update_engine_labels()
         if self.command_preview is not None:
             self._update_command_preview()
 
@@ -1072,7 +1101,6 @@ class MRQLauncher(tk.Tk):
         t = self.settings.tasks[i]
         st = self.state[i]["status"] if i < len(self.state) else "Ready"
         job_name = t.notes.strip() or soft_name(t.sequence)
-        output_name = os.path.basename(t.output_dir.rstrip("/")) if t.output_dir else "Preset default"
         return (
             "✔" if t.enabled else "",
             job_name,
@@ -1080,7 +1108,6 @@ class MRQLauncher(tk.Tk):
             soft_name(t.sequence),
             soft_name(t.preset),
             st,
-            output_name,
             t.notes,
         )
 
