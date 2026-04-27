@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.7.8"
+APP_VERSION = "1.7.9"
 
 UI_THEME = {
     "bg": "#111318",
@@ -2920,7 +2920,7 @@ def run_qt_shell() -> int:
     try:
         from PySide6.QtCore import Qt, QTimer
         from PySide6.QtWidgets import (
-            QApplication, QAbstractItemView, QFileDialog, QFrame, QHBoxLayout,
+            QApplication, QAbstractItemView, QDialog, QDialogButtonBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
             QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QProgressBar,
             QStatusBar, QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
         )
@@ -2928,6 +2928,89 @@ def run_qt_shell() -> int:
         print("PySide6 is required for the Qt shell. Install it with: pip install PySide6")
         print(f"Import error: {exc}")
         return 1
+
+    class QtTaskEditor(QDialog):
+        """Qt editor for one render task."""
+
+        def __init__(self, parent, task: Optional[RenderTask] = None):
+            super().__init__(parent)
+            self.setWindowTitle("Task Editor")
+            self.result: Optional[RenderTask] = None
+            self.source_task = task
+            layout = QVBoxLayout(self)
+            form = QGridLayout()
+            layout.addLayout(form)
+
+            self.project_edit = QLineEdit(task.uproject if task else "")
+            self.level_edit = QLineEdit(task.level if task else "")
+            self.sequence_edit = QLineEdit(task.sequence if task else "")
+            self.preset_edit = QLineEdit(task.preset if task else "")
+            self.output_edit = QLineEdit(task.output_dir if task else "")
+
+            rows = (
+                ("Project (.uproject)", self.project_edit, self._browse_project),
+                ("Map (SoftObjectPath)", self.level_edit, self._browse_level),
+                ("Level Sequence", self.sequence_edit, self._browse_sequence),
+                ("MRQ Preset", self.preset_edit, self._browse_preset),
+                ("Output Directory", self.output_edit, self._browse_output),
+            )
+            for row, (label_text, edit, browse_cb) in enumerate(rows):
+                form.addWidget(QLabel(label_text), row, 0)
+                form.addWidget(edit, row, 1)
+                button = QPushButton("Browse")
+                button.clicked.connect(browse_cb)
+                form.addWidget(button, row, 2)
+
+            buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+            buttons.accepted.connect(self._accept)
+            buttons.rejected.connect(self.reject)
+            layout.addWidget(buttons)
+            self.resize(760, 220)
+
+        def _browse_project(self) -> None:
+            path, _ = QFileDialog.getOpenFileName(self, "Select .uproject", "", "Unreal Project (*.uproject);;All Files (*.*)")
+            if path:
+                self.project_edit.setText(path)
+
+        def _browse_level(self) -> None:
+            self._browse_soft_object(self.level_edit, "Select MAP .umap/.uasset", "Unreal Map/Asset (*.umap *.uasset);;All Files (*.*)")
+
+        def _browse_sequence(self) -> None:
+            self._browse_soft_object(self.sequence_edit, "Select LevelSequence .uasset", "Unreal Asset (*.uasset);;All Files (*.*)")
+
+        def _browse_preset(self) -> None:
+            self._browse_soft_object(self.preset_edit, "Select MRQ Preset .uasset", "Unreal Asset (*.uasset);;All Files (*.*)")
+
+        def _browse_soft_object(self, edit: QLineEdit, title: str, file_filter: str) -> None:
+            path, _ = QFileDialog.getOpenFileName(self, title, "", file_filter)
+            if not path:
+                return
+            try:
+                edit.setText(fs_to_soft_object(path))
+            except Exception as exc:
+                QMessageBox.critical(self, title, str(exc))
+
+        def _browse_output(self) -> None:
+            path = QFileDialog.getExistingDirectory(self, "Select Output Directory")
+            if path:
+                self.output_edit.setText(path.replace("\\", "/"))
+
+        def _accept(self) -> None:
+            task = RenderTask(
+                uproject=self.project_edit.text().strip(),
+                level=self.level_edit.text().strip(),
+                sequence=self.sequence_edit.text().strip(),
+                preset=self.preset_edit.text().strip(),
+                output_dir=self.output_edit.text().strip(),
+                notes=(self.source_task.notes if self.source_task else ""),
+                added_at=(self.source_task.added_at if self.source_task else current_task_timestamp()),
+                enabled=(self.source_task.enabled if self.source_task else True),
+            )
+            if not all([task.uproject, task.level, task.sequence, task.preset]):
+                QMessageBox.critical(self, "Validation", "Fill in all required fields.")
+                return
+            self.result = task
+            self.accept()
 
     class QtMRQShell(QMainWindow):
         """Qt queue workspace backed by shared task/settings/core models."""
@@ -2954,6 +3037,7 @@ def run_qt_shell() -> int:
             self._session_started_at: Optional[float] = None
             self.table = None
             self.filter_edit = None
+            self.ue_path_edit = None
             self.command_preview = None
             self.log_view = None
             self.progress_bar = None
@@ -3020,7 +3104,9 @@ def run_qt_shell() -> int:
 
         def _build_header(self) -> QFrame:
             panel = self._panel()
-            layout = QHBoxLayout(panel)
+            layout = QVBoxLayout(panel)
+
+            top_row = QHBoxLayout()
             title_block = QVBoxLayout()
             title = QLabel("MRQ Launcher CLI")
             title.setStyleSheet("font-size: 20px; font-weight: 700;")
@@ -3028,16 +3114,27 @@ def run_qt_shell() -> int:
             subtitle.setStyleSheet("color: #8a94a6;")
             title_block.addWidget(title)
             title_block.addWidget(subtitle)
-            layout.addLayout(title_block, 1)
+            top_row.addLayout(title_block, 1)
             load_button = QPushButton("Load Queue")
             load_button.clicked.connect(self.load_queue_dialog)
             save_button = QPushButton("Save Queue")
             save_button.clicked.connect(self.save_queue_dialog)
             minimal_button = QPushButton("Minimal Mode")
             minimal_button.clicked.connect(self.enter_minimal_mode)
-            layout.addWidget(load_button)
-            layout.addWidget(save_button)
-            layout.addWidget(minimal_button)
+            top_row.addWidget(load_button)
+            top_row.addWidget(save_button)
+            top_row.addWidget(minimal_button)
+            layout.addLayout(top_row)
+
+            path_row = QHBoxLayout()
+            path_row.addWidget(QLabel("UnrealEditor-Cmd.exe"))
+            self.ue_path_edit = QLineEdit(self.settings.ue_cmd)
+            self.ue_path_edit.textChanged.connect(self._on_ue_path_changed)
+            path_row.addWidget(self.ue_path_edit, 1)
+            browse_button = QPushButton("Browse")
+            browse_button.clicked.connect(self.browse_unreal_cmd)
+            path_row.addWidget(browse_button)
+            layout.addLayout(path_row)
             return panel
 
         def _build_minimal_header(self) -> QFrame:
@@ -3072,7 +3169,7 @@ def run_qt_shell() -> int:
             toolbar.setContentsMargins(0, 0, 0, 0)
             for text, callback in (
                 ("Add Job", self.load_task_dialog),
-                ("Edit", self._edit_not_connected),
+                ("Edit", self.edit_selected_task),
                 ("Duplicate", self.duplicate_selected),
                 ("Remove", self.remove_selected),
                 ("Move Up", lambda: self.move_selected(-1)),
@@ -3496,6 +3593,8 @@ def run_qt_shell() -> int:
             for key, value in config.items():
                 if hasattr(self.settings, key):
                     setattr(self.settings, key, value)
+            if self.ue_path_edit:
+                self.ue_path_edit.setText(self.settings.ue_cmd)
             self.settings.tasks = tasks
             self.state = [default_task_state() for _ in self.settings.tasks]
             self.runtime_queue.clear_pending(TaskRuntimeStatus.CANCELLED_QUEUE)
@@ -3750,8 +3849,39 @@ def run_qt_shell() -> int:
                 QApplication.clipboard().setText(self.command_preview.toPlainText())
                 self._append_log("[Qt] Command preview copied to clipboard.")
 
-        def _edit_not_connected(self) -> None:
-            QMessageBox.information(self, "Edit", "Task editing will be connected in a later Qt task.")
+        def browse_unreal_cmd(self) -> None:
+            path, _ = QFileDialog.getOpenFileName(
+                self,
+                "Select UnrealEditor-Cmd.exe",
+                "",
+                "UnrealEditor-Cmd (UnrealEditor-Cmd.exe);;Executable (*.exe);;All Files (*.*)",
+            )
+            if path and self.ue_path_edit:
+                self.ue_path_edit.setText(path)
+
+        def _on_ue_path_changed(self, value: str) -> None:
+            self.settings.ue_cmd = value.strip()
+            self._update_command_preview()
+
+        def edit_selected_task(self) -> None:
+            indices = self.selected_indices()
+            if not indices:
+                QMessageBox.information(self, "Edit", "Select one task to edit.")
+                return
+            idx = indices[0]
+            if not (0 <= idx < len(self.settings.tasks)):
+                return
+            old_task = self.settings.tasks[idx]
+            dialog = QtTaskEditor(self, old_task)
+            if dialog.exec() != QDialog.Accepted or dialog.result is None:
+                return
+            self.runtime_queue.remove_tasks([old_task])
+            self.settings.tasks[idx] = dialog.result
+            self.state[idx] = default_task_state()
+            self.refresh_queue_view()
+            self._select_task_index(idx)
+            self._append_log("[Qt] Edited selected task.")
+
 
         def _extract_progress(self, line: str) -> Optional[int]:
             if "%" in line:
