@@ -544,6 +544,12 @@ class MRQLauncher(tk.Tk):
 
     def remove_task(self):
         sel = sorted(self._selected_indices(), reverse=True)
+        if not sel:
+            return
+        # If there are queued copies of these task objects, remove them too
+        # so deleted tasks are not rendered later.
+        removed_tasks = [self.settings.tasks[idx] for idx in sel]
+        self._remove_tasks_from_runtime_queue(removed_tasks)
         for idx in sel:
             del self.settings.tasks[idx]
             del self.state[idx]
@@ -1139,6 +1145,32 @@ class MRQLauncher(tk.Tk):
             removed += 1
         if removed:
             self._log(f"[Cancel] Removed {removed} queued task(s).")
+
+    def _remove_tasks_from_runtime_queue(self, tasks_to_remove: List[RenderTask]):
+        """
+        Remove specific task objects from the runtime queue by identity.
+        Used when tasks are deleted from the table while queue items already exist.
+        """
+        if not tasks_to_remove:
+            return
+        to_remove_ids = {id(t) for t in tasks_to_remove}
+        kept = []
+        removed = 0
+        while True:
+            try:
+                t = self.runtime_q.get_nowait()
+            except queue.Empty:
+                break
+            if id(t) in to_remove_ids:
+                removed += 1
+                continue
+            kept.append(t)
+
+        for t in kept:
+            self.runtime_q.put(t)
+
+        if removed:
+            self._log(f"[Tasks] Removed {removed} queued item(s) for deleted task(s).")
 
     def enqueue_selected_or_enabled(self):
         """
