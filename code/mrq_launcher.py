@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.7.5"
+APP_VERSION = "1.7.6"
 
 UI_THEME = {
     "bg": "#111318",
@@ -2882,6 +2882,35 @@ class MRQLauncher(tk.Tk):
                 self._update_row_async(idx)
         self._log(f"[Status] Cleared status for {len(sel)} task(s).")
 
+
+
+def build_unreal_command(settings: AppSettings, task: RenderTask) -> List[str]:
+    """Build the effective Unreal command from shared app settings and task data."""
+    cmd = [
+        settings.ue_cmd or "<UnrealEditor-Cmd.exe>",
+        task.uproject or "<uproject>",
+        task.level.split(".")[0] if task.level else "<map>",
+        "-game",
+        f'-LevelSequence="{task.sequence or "<sequence>"}"',
+        f'-MoviePipelineConfig="{task.preset or "<preset>"}"',
+        "-log",
+    ]
+    cmd.append("-windowed" if settings.windowed else "-fullscreen")
+    cmd += [f"-ResX={int(settings.resx)}", f"-ResY={int(settings.resy)}"]
+    if settings.no_texture_streaming:
+        cmd.append("-notexturestreaming")
+    extra = (settings.extra_cli or "").strip()
+    if extra:
+        cmd += shlex.split(extra)
+    if task.output_dir:
+        cmd.append(f'-OutputDirectory="{task.output_dir}"')
+    return cmd
+
+
+def build_unreal_command_preview(settings: AppSettings, task: RenderTask) -> str:
+    """Build a display-friendly command preview from shared command data."""
+    return (" " + "\\" + "\n").join(build_unreal_command(settings, task))
+
 # -------------------------------------------------
 # Optional Qt shell preview
 # -------------------------------------------------
@@ -2889,11 +2918,11 @@ class MRQLauncher(tk.Tk):
 def run_qt_shell() -> int:
     """Launch the PySide6 queue workspace without replacing the Tkinter launcher."""
     try:
-        from PySide6.QtCore import Qt
+        from PySide6.QtCore import Qt, QTimer
         from PySide6.QtWidgets import (
             QApplication, QAbstractItemView, QFileDialog, QFrame, QHBoxLayout,
-            QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QStatusBar,
-            QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
+            QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QProgressBar,
+            QStatusBar, QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
         )
     except ImportError as exc:
         print("PySide6 is required for the Qt shell. Install it with: pip install PySide6")
@@ -2909,22 +2938,37 @@ def run_qt_shell() -> int:
             super().__init__()
             self.settings = AppSettings()
             self.state: List[dict] = []
+            self.ui_events: "queue.Queue[TaskRuntimeEvent]" = queue.Queue()
+            self.log_events: "queue.Queue[str]" = queue.Queue()
+            self.process_controller = RenderProcessController(self._append_log)
             self.runtime_queue = RuntimeQueueCoordinator(
                 self._find_task_index_by_identity,
-                lambda: None,
+                self._current_running_task_for_queue,
                 self._set_status_from_core,
                 self._append_log,
             )
+            self.worker_running = False
+            self.stop_all = False
+            self.cancel_current_requested = False
+            self._current_global_idx: Optional[int] = None
+            self._session_started_at: Optional[float] = None
             self.table = None
             self.filter_edit = None
             self.command_preview = None
             self.log_view = None
+            self.progress_bar = None
+            self.current_task_label = None
+            self.current_status_label = None
+            self.session_time_label = None
             self.inspector_labels = {}
             self.setWindowTitle(f"MRQ Launcher (Qt Shell) ver {APP_VERSION}")
             self.resize(1280, 760)
             self.setMinimumSize(900, 560)
             self._build_ui()
             self.refresh_queue_view()
+            self.event_timer = QTimer(self)
+            self.event_timer.timeout.connect(self._drain_runtime_events)
+            self.event_timer.start(100)
 
         def _build_ui(self) -> None:
             root = QWidget(self)
@@ -2940,7 +2984,7 @@ def run_qt_shell() -> int:
             root_layout.addLayout(body, 1)
             root_layout.addWidget(self._build_diagnostics_area())
             status = QStatusBar(self)
-            status.showMessage("Qt queue workspace ready. Runtime rendering will be connected in a later task.")
+            status.showMessage("Qt runtime workspace ready.")
             self.setStatusBar(status)
 
         def _panel(self) -> QFrame:
@@ -2954,7 +2998,7 @@ def run_qt_shell() -> int:
             title_block = QVBoxLayout()
             title = QLabel("MRQ Launcher CLI")
             title.setStyleSheet("font-size: 20px; font-weight: 700;")
-            subtitle = QLabel("Qt queue workspace")
+            subtitle = QLabel("Qt runtime workspace")
             subtitle.setStyleSheet("color: #8a94a6;")
             title_block.addWidget(title)
             title_block.addWidget(subtitle)
@@ -3030,20 +3074,34 @@ def run_qt_shell() -> int:
             layout = QVBoxLayout(panel)
             controls = QHBoxLayout()
             for text, callback in (
-                ("Render Enabled", self.queue_enabled), ("Render Selected", self.queue_selected),
-                ("Queue Selected", self.queue_selected_or_enabled), ("Render All", self.queue_all),
+                ("Render Enabled", self.render_enabled), ("Render Selected", self.render_selected),
+                ("Queue Selected", self.queue_selected_or_enabled), ("Render All", self.render_all),
             ):
                 button = QPushButton(text)
                 button.clicked.connect(callback)
                 controls.addWidget(button)
             stop_current = QPushButton("Stop Current Render")
-            stop_current.setEnabled(False)
+            stop_current.clicked.connect(self.cancel_current)
             stop_all = QPushButton("Stop All")
-            stop_all.clicked.connect(self.clear_pending_queue)
+            stop_all.clicked.connect(self.cancel_all)
             controls.addWidget(stop_current)
             controls.addWidget(stop_all)
             controls.addStretch(1)
             layout.addLayout(controls)
+
+            status_row = QHBoxLayout()
+            self.current_task_label = QLabel("Current task: Idle")
+            self.current_status_label = QLabel("Status: Idle")
+            self.session_time_label = QLabel("Session total: 00:00:00")
+            self.progress_bar = QProgressBar(panel)
+            self.progress_bar.setRange(0, 100)
+            self.progress_bar.setValue(0)
+            status_row.addWidget(self.current_task_label)
+            status_row.addWidget(self.current_status_label)
+            status_row.addWidget(self.progress_bar, 1)
+            status_row.addWidget(self.session_time_label)
+            layout.addLayout(status_row)
+
             diagnostics = QHBoxLayout()
             self.command_preview = QTextEdit(panel)
             self.command_preview.setReadOnly(True)
@@ -3128,19 +3186,73 @@ def run_qt_shell() -> int:
                     return i
             return None
 
+        def _current_running_task_for_queue(self) -> Optional[RenderTask]:
+            if self._current_global_idx is not None and 0 <= self._current_global_idx < len(self.settings.tasks):
+                return self.settings.tasks[self._current_global_idx]
+            return None
+
         def _set_status_from_core(self, idx: int, text: str) -> None:
-            self._ensure_state()
-            if 0 <= idx < len(self.state):
-                self.state[idx]["status"] = text
-                if text == TaskRuntimeStatus.QUEUED:
-                    self.state[idx]["progress"] = 0
-                elif text.startswith(TaskRuntimeStatus.DONE):
-                    self.state[idx]["progress"] = 100
-            self.refresh_queue_view()
+            self.ui_events.put(TaskRuntimeEvent(
+                event_type=self._event_type_for_status(text),
+                task_index=idx,
+                status=text,
+            ))
 
         def _append_log(self, message: str) -> None:
-            if self.log_view:
-                self.log_view.append(message)
+            self.log_events.put(message)
+
+        def _event_type_for_status(self, status: str) -> str:
+            status = status or TaskRuntimeStatus.READY
+            if status == TaskRuntimeStatus.QUEUED:
+                return TaskRuntimeEventType.TASK_QUEUED
+            if status.startswith(TaskRuntimeStatus.RENDERING):
+                return TaskRuntimeEventType.TASK_STARTED
+            if status.startswith(TaskRuntimeStatus.DONE):
+                return TaskRuntimeEventType.TASK_FINISHED
+            if status.startswith(TaskRuntimeStatus.FAILED):
+                return TaskRuntimeEventType.TASK_FAILED
+            if status.startswith(TaskRuntimeStatus.CANCELLED):
+                return TaskRuntimeEventType.TASK_CANCELLED
+            return "task_status_changed"
+
+        def _apply_runtime_event(self, event: TaskRuntimeEvent) -> bool:
+            idx = event.task_index
+            if idx is None or not (0 <= idx < len(self.state)):
+                return False
+            if event.start is not None:
+                self.state[idx]["start"] = event.start
+            if event.end is not None:
+                self.state[idx]["end"] = event.end
+            if event.status is not None:
+                self.state[idx]["status"] = event.status
+                if event.status.startswith(TaskRuntimeStatus.DONE):
+                    self.state[idx]["progress"] = 100
+                elif event.status in (TaskRuntimeStatus.QUEUED, TaskRuntimeStatus.READY, TaskRuntimeStatus.CANCELLED, TaskRuntimeStatus.CANCELLED_QUEUE):
+                    self.state[idx]["progress"] = 0
+            if event.progress is not None:
+                self.state[idx]["progress"] = event.progress
+            return True
+
+        def _drain_runtime_events(self) -> None:
+            changed = False
+            try:
+                while True:
+                    message = self.log_events.get_nowait()
+                    if self.log_view:
+                        self.log_view.append(message)
+            except queue.Empty:
+                pass
+            try:
+                while True:
+                    event = self.ui_events.get_nowait()
+                    changed = self._apply_runtime_event(event) or changed
+            except queue.Empty:
+                pass
+            self._update_session_runtime()
+            if changed:
+                self.refresh_queue_view()
+            else:
+                self._update_status_bar()
 
         def _on_selection_changed(self) -> None:
             self._update_inspector()
@@ -3170,22 +3282,10 @@ def run_qt_shell() -> int:
                     label.setText(value)
 
         def _build_command_preview_for_task(self, task: RenderTask) -> str:
-            ue_cmd = self.settings.ue_cmd or "<UnrealEditor-Cmd.exe>"
-            cmd = [ue_cmd, task.uproject or "<uproject>", task.level.split(".")[0] if task.level else "<map>", "-game"]
-            cmd += [f'-LevelSequence="{task.sequence or "<sequence>"}"', f'-MoviePipelineConfig="{task.preset or "<preset>"}"', "-log"]
-            cmd.append("-windowed" if self.settings.windowed else "-fullscreen")
-            cmd += [f"-ResX={self.settings.resx}", f"-ResY={self.settings.resy}"]
-            if self.settings.no_texture_streaming:
-                cmd.append("-notexturestreaming")
-            extra = (self.settings.extra_cli or "").strip()
-            if extra:
-                try:
-                    cmd += shlex.split(extra)
-                except ValueError:
-                    cmd.append(extra)
-            if task.output_dir:
-                cmd.append(f'-OutputDirectory="{task.output_dir}"')
-            return " \\\n".join(cmd)
+            return build_unreal_command_preview(self.settings, task)
+
+        def _build_command_for_task(self, task: RenderTask) -> List[str]:
+            return build_unreal_command(self.settings, task)
 
         def _update_command_preview(self) -> None:
             if not self.command_preview:
@@ -3195,9 +3295,42 @@ def run_qt_shell() -> int:
 
         def _update_status_bar(self) -> None:
             queued = sum(1 for state in self.state if state.get("status") == TaskRuntimeStatus.QUEUED)
-            ready = sum(1 for state in self.state if state.get("status", TaskRuntimeStatus.READY) == TaskRuntimeStatus.READY)
+            running = sum(1 for state in self.state if state.get("status", "").startswith(TaskRuntimeStatus.RENDERING))
+            failed = sum(1 for state in self.state if state.get("status", "").startswith((TaskRuntimeStatus.FAILED, TaskRuntimeStatus.CANCELLED)))
+            done = sum(1 for state in self.state if state.get("status", "").startswith(TaskRuntimeStatus.DONE))
             enabled = sum(1 for task in self.settings.tasks if task.enabled)
-            self.statusBar().showMessage(f"Tasks: {len(self.settings.tasks)} | Enabled: {enabled} | Ready: {ready} | Queued: {queued}")
+            self.statusBar().showMessage(f"Tasks: {len(self.settings.tasks)} | Enabled: {enabled} | Queued: {queued} | Running: {running} | Done: {done} | Failed: {failed}")
+            current_idx = self._current_global_idx if self._current_global_idx is not None else (self.selected_indices()[0] if self.selected_indices() else None)
+            if current_idx is not None and 0 <= current_idx < len(self.settings.tasks):
+                task = self.settings.tasks[current_idx]
+                state = self.state[current_idx]
+                self.current_task_label.setText(f"Current task: {soft_name(task.sequence)}")
+                self.current_status_label.setText(f"Status: {state.get('status', 'Ready')}")
+                progress = state.get("progress") or 0
+                self.progress_bar.setValue(int(progress))
+            else:
+                self.current_task_label.setText("Current task: Idle")
+                self.current_status_label.setText("Status: Idle")
+                self.progress_bar.setValue(0)
+
+        def _update_session_runtime(self) -> None:
+            for idx, state in enumerate(self.state):
+                if state.get("start") and not state.get("end") and state.get("status", "").startswith(TaskRuntimeStatus.RENDERING):
+                    # Keep the running-time column live without waiting for another render event.
+                    pass
+            total = 0
+            for state in self.state:
+                start = state.get("start")
+                end = state.get("end")
+                if start and end:
+                    total += max(0, int(end - start))
+            if self._current_global_idx is not None and 0 <= self._current_global_idx < len(self.state):
+                state = self.state[self._current_global_idx]
+                if state.get("start") and self.process_controller.is_active():
+                    total += max(0, int(time.time() - state["start"]))
+            h, rem = divmod(total, 3600)
+            m, s = divmod(rem, 60)
+            self.session_time_label.setText(f"Session total: {h:02d}:{m:02d}:{s:02d}")
 
         def load_queue_dialog(self) -> None:
             path, _ = QFileDialog.getOpenFileName(self, "Load Queue", "", "JSON (*.json);;All Files (*.*)")
@@ -3298,22 +3431,22 @@ def run_qt_shell() -> int:
                 self.runtime_queue.remove_tasks(disabled_tasks)
             self.refresh_queue_view()
 
-        def queue_selected(self) -> None:
+        def render_selected(self) -> None:
             tasks = self._collect(only_selected=True)
             if not tasks:
                 QMessageBox.information(self, "Render Selected", "Select at least one task in the table.")
                 return
-            self._enqueue_tasks(tasks)
+            self._run_queue(tasks)
 
-        def queue_enabled(self) -> None:
+        def render_enabled(self) -> None:
             tasks = self._collect(only_enabled=True)
             if not tasks:
                 QMessageBox.information(self, "Render Enabled", "No enabled tasks to run.")
                 return
-            self._enqueue_tasks(tasks)
+            self._run_queue(tasks)
 
-        def queue_all(self) -> None:
-            self._enqueue_tasks(self._collect())
+        def render_all(self) -> None:
+            self._run_queue(self._collect())
 
         def queue_selected_or_enabled(self) -> None:
             tasks = self._collect(only_selected=True) or self._collect(only_enabled=True)
@@ -3321,15 +3454,144 @@ def run_qt_shell() -> int:
                 QMessageBox.information(self, "Queue Selected", "Nothing to enqueue: select tasks or enable some tasks.")
                 return
             self._enqueue_tasks(tasks)
+            if not self.worker_running:
+                self._run_queue([])
 
-        def _enqueue_tasks(self, tasks: List[RenderTask]) -> None:
+        def _enqueue_tasks(self, tasks: List[RenderTask]) -> bool:
             changed = self.runtime_queue.enqueue_tasks(tasks, mark_queued=True, log_prefix="[Qt] Queued ")
             if changed:
                 self.refresh_queue_view()
+            return changed
 
-        def clear_pending_queue(self) -> None:
+        def _run_queue(self, tasks: List[RenderTask]) -> None:
+            if not self.settings.ue_cmd or not os.path.exists(self.settings.ue_cmd):
+                QMessageBox.critical(self, "Render", "Specify a valid path to UnrealEditor-Cmd.exe in the loaded queue file.")
+                return
+            if tasks:
+                self._enqueue_tasks(tasks)
+            if self.worker_running:
+                return
+            if self.runtime_queue.empty():
+                QMessageBox.information(self, "Render", "No tasks to run")
+                return
+            self.stop_all = False
+            self.cancel_current_requested = False
+            threading.Thread(target=self._worker_loop, daemon=True).start()
+
+        def _worker_loop(self) -> None:
+            self.worker_running = True
+            retries = int(self.settings.retries)
+            policy = self.settings.fail_policy
+            skip_next_pending = 0
+            local_counter = 0
+            self._append_log("[Qt] Queue worker started.")
+            while True:
+                if self.stop_all and self.runtime_queue.empty():
+                    break
+                try:
+                    task = self.runtime_queue.get(timeout=0.5)
+                except queue.Empty:
+                    if self.runtime_queue.empty():
+                        break
+                    continue
+                local_counter += 1
+                if self.stop_all:
+                    break
+                task_index = self._find_task_index_by_identity(task)
+                if task_index is None:
+                    continue
+                if skip_next_pending > 0:
+                    skip_next_pending -= 1
+                    self._set_status_from_core(task_index, TaskRuntimeStatus.SKIPPED_POLICY)
+                    self._append_log(f"[Qt] [{local_counter}] Skipped by fail policy.")
+                    continue
+                if not all([task.uproject, task.level, task.sequence, task.preset]):
+                    self._append_log(f"[Qt] [{local_counter}] Skipped incomplete task.")
+                    continue
+
+                attempt = 0
+                while attempt <= retries and not self.stop_all:
+                    attempt += 1
+                    cmd = self._build_command_for_task(task)
+                    start_time = time.time()
+                    self._current_global_idx = task_index
+                    self.ui_events.put(TaskRuntimeEvent(TaskRuntimeEventType.TASK_STARTED, task_index, "Rendering 00:00:00", 0, start_time))
+                    self._append_log(f"[Qt] [{local_counter}] Start try {attempt}/{retries + 1}: {' '.join(cmd)}")
+                    try:
+                        process = self.process_controller.launch(cmd)
+                    except Exception as exc:
+                        self._append_log(f"[Qt] [{local_counter}] Failed to start: {exc}")
+                        break
+
+                    def pump_stdout(proc: subprocess.Popen, idx: int) -> None:
+                        try:
+                            if proc.stdout:
+                                for line in proc.stdout:
+                                    if self.stop_all:
+                                        break
+                                    line = line.rstrip()
+                                    self._append_log(line)
+                                    progress = self._extract_progress(line)
+                                    if progress is not None:
+                                        self.ui_events.put(TaskRuntimeEvent(TaskRuntimeEventType.PROGRESS_UPDATED, idx, progress=progress))
+                        except Exception as exc:
+                            self._append_log(f"[Qt pump] {exc}")
+
+                    pump_thread = threading.Thread(target=pump_stdout, args=(process, task_index), daemon=True)
+                    pump_thread.start()
+                    while process.poll() is None and not self.stop_all:
+                        elapsed = int(time.time() - start_time)
+                        h, rem = divmod(elapsed, 3600)
+                        m, s = divmod(rem, 60)
+                        self.ui_events.put(TaskRuntimeEvent(TaskRuntimeEventType.TASK_STARTED, task_index, f"Rendering {h:02d}:{m:02d}:{s:02d}"))
+                        time.sleep(1.0)
+                    rc = process.wait()
+                    self.process_controller.clear_if_current(process)
+                    end_time = time.time()
+                    self.ui_events.put(TaskRuntimeEvent(TaskRuntimeEventType.PROGRESS_UPDATED, task_index, end=end_time))
+                    self._append_log(f"[Qt] [{local_counter}] Exit code: {rc}")
+
+                    if self.cancel_current_requested:
+                        self.cancel_current_requested = False
+                        self.ui_events.put(TaskRuntimeEvent(TaskRuntimeEventType.TASK_CANCELLED, task_index, TaskRuntimeStatus.CANCELLED, 0, end=end_time))
+                        break
+                    if rc == 0:
+                        duration = format_duration_hms(end_time - start_time)
+                        self.ui_events.put(TaskRuntimeEvent(TaskRuntimeEventType.TASK_FINISHED, task_index, f"Done ({duration})", 100, end=end_time))
+                        break
+                    if policy == "stop_queue":
+                        self.ui_events.put(TaskRuntimeEvent(TaskRuntimeEventType.TASK_FAILED, task_index, f"Failed (rc={rc})", end=end_time))
+                        self.stop_all = True
+                        break
+                    if attempt <= retries:
+                        self._append_log(f"[Qt] [{local_counter}] Will retry.")
+                    else:
+                        self.ui_events.put(TaskRuntimeEvent(TaskRuntimeEventType.TASK_FAILED, task_index, f"Failed (rc={rc})", end=end_time))
+                        if policy == "skip_next":
+                            skip_next_pending = 1
+                        break
+                if self.stop_all:
+                    break
+            if self.stop_all:
+                self.runtime_queue.clear_pending(TaskRuntimeStatus.CANCELLED_QUEUE)
+            self._current_global_idx = None
+            self.worker_running = False
+            self.ui_events.put(TaskRuntimeEvent(TaskRuntimeEventType.QUEUE_COMPLETED))
+            self._append_log("[Qt] Queue complete.")
+
+        def cancel_current(self) -> None:
+            if self.process_controller.is_active():
+                self.cancel_current_requested = True
+                self.process_controller.stop_current(int(self.settings.kill_timeout_s))
+            else:
+                self._append_log("[Qt] No running process.")
+
+        def cancel_all(self) -> None:
+            self.stop_all = True
+            self.cancel_current()
             self.runtime_queue.clear_pending(TaskRuntimeStatus.CANCELLED_QUEUE)
             self.refresh_queue_view()
+            self._append_log("[Qt] Stop-all requested.")
 
         def copy_command_preview(self) -> None:
             if self.command_preview:
@@ -3339,11 +3601,22 @@ def run_qt_shell() -> int:
         def _edit_not_connected(self) -> None:
             QMessageBox.information(self, "Edit", "Task editing will be connected in a later Qt task.")
 
+        def _extract_progress(self, line: str) -> Optional[int]:
+            if "%" in line:
+                i = line.find("%")
+                j = i - 1
+                while j >= 0 and line[j].isdigit():
+                    j -= 1
+                digits = line[j + 1:i]
+                if digits.isdigit():
+                    value = int(digits)
+                    if 0 <= value <= 100:
+                        return value
+            return None
+
     app = QApplication.instance() or QApplication(sys.argv)
     window = QtMRQShell()
     window.show()
-    return app.exec()
-
     return app.exec()
 
 # -------------------------------------------------
