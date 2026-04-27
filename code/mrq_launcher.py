@@ -8,7 +8,7 @@ import sys
 import shlex
 from dataclasses import dataclass, asdict, field
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import tkinter as tk
 from tkinter import filedialog, messagebox, StringVar
@@ -18,7 +18,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.5.3"
+APP_VERSION = "1.5.4"
 
 UI_THEME = {
     "bg": "#111318",
@@ -84,6 +84,46 @@ def default_task_state() -> dict:
     return {"status": "Ready", "progress": None, "start": None, "end": None}
 
 
+def current_task_timestamp() -> str:
+    return datetime.now().isoformat(timespec="seconds")
+
+
+def format_added_display(value: str) -> str:
+    if not value:
+        return "—"
+    try:
+        dt = datetime.fromisoformat(value)
+    except Exception:
+        return value
+
+    now = datetime.now()
+    day_delta = (now.date() - dt.date()).days
+    if day_delta == 0:
+        return f"Today {dt:%H:%M}"
+    if day_delta == 1:
+        return f"Yesterday {dt:%H:%M}"
+    if 1 < day_delta <= 6:
+        return f"{day_delta} days ago"
+    return dt.strftime("%Y-%m-%d %H:%M")
+
+
+def format_status_indicator(status: str, enabled: bool) -> str:
+    if not enabled:
+        return "○ Disabled"
+    status = status or "Ready"
+    if status.startswith("Failed") or status.startswith("Cancelled"):
+        return "● Failed"
+    if status.startswith("Done"):
+        return "● Done"
+    if status.startswith("Rendering"):
+        return "◉ Rendering"
+    if status.startswith("Skipped"):
+        return "◌ Skipped"
+    if status == "Queued":
+        return "◌ Queued"
+    return "● Ready"
+
+
 def configure_windows_dpi_awareness() -> None:
     """Enable system DPI awareness on Windows before creating the Tk root."""
     if sys.platform != "win32":
@@ -120,6 +160,7 @@ class RenderTask:
     preset: str = ""
     output_dir: str = ""  # Optional override for output directory
     notes: str = ""
+    added_at: str = field(default_factory=current_task_timestamp)
     enabled: bool = True
 
 
@@ -147,6 +188,7 @@ class TaskEditor(tk.Toplevel):
         # Allow resizing of the task editor window
         self.resizable(True, True)
         self.result: Optional[RenderTask] = None
+        self.source_task = task
         self.configure(bg=UI_THEME["panel"])
 
         self.var_uproj = StringVar(value=(task.uproject if task else ""))
@@ -154,7 +196,6 @@ class TaskEditor(tk.Toplevel):
         self.var_seq = StringVar(value=(task.sequence if task else ""))
         self.var_preset = StringVar(value=(task.preset if task else ""))
         self.var_output_dir = StringVar(value=(task.output_dir if task else ""))
-        self.var_notes = StringVar(value=(task.notes if task else ""))
 
         frm = tk.Frame(self, padx=10, pady=10, bg=UI_THEME["panel"])
         frm.pack(fill=tk.BOTH, expand=True)
@@ -216,9 +257,6 @@ class TaskEditor(tk.Toplevel):
             "Optional. If empty, the path from MRQ Preset will be used."
         )
 
-        tk.Label(frm, text="Notes", bg=UI_THEME["panel"], fg=UI_THEME["text"]).pack(anchor="w")
-        tk.Entry(frm, textvariable=self.var_notes, width=95, bg=UI_THEME["entry"], fg=UI_THEME["text"], insertbackground=UI_THEME["text"], relief=tk.FLAT, bd=0, highlightthickness=1, highlightbackground=UI_THEME["border"], highlightcolor=UI_THEME["accent"]).pack(fill="x")
-
         btn = tk.Frame(frm, bg=UI_THEME["panel"])
         btn.pack(fill="x", pady=10)
         tk.Button(btn, text="OK", command=self.on_ok, bg=UI_THEME["accent"], fg="#FFFFFF", activebackground=UI_THEME["accent"], activeforeground="#FFFFFF", relief=tk.FLAT, bd=0, padx=12, pady=6).pack(side=tk.LEFT, padx=4)
@@ -231,7 +269,8 @@ class TaskEditor(tk.Toplevel):
             sequence=self.var_seq.get().strip(),
             preset=self.var_preset.get().strip(),
             output_dir=self.var_output_dir.get().strip(),
-            notes=self.var_notes.get().strip(),
+            notes=(self.source_task.notes if self.source_task else ""),
+            added_at=(self.source_task.added_at if self.source_task else current_task_timestamp()),
             enabled=True,
         )
         if not (t.uproject and t.level and t.sequence and t.preset):
@@ -632,16 +671,16 @@ class MRQLauncher(tk.Tk):
         tree_shell = tk.Frame(parent, bg=UI_THEME["panel"])
         tree_shell.pack(fill=tk.BOTH, expand=True)
 
-        cols = ("enabled", "job", "level", "sequence", "preset", "status", "notes")
+        cols = ("enabled", "status", "job", "level", "sequence", "preset", "added")
         self.tree = ttk.Treeview(tree_shell, columns=cols, show="headings", selectmode="extended")
         for name, title, width, anchor in (
             ("enabled", "On", self._s(48), "center"),
-            ("job", "Job", self._s(210), "w"),
-            ("level", "Level", self._s(180), "w"),
-            ("sequence", "Sequence", self._s(200), "w"),
+            ("status", "Status", self._s(150), "w"),
+            ("job", "Job", self._s(220), "w"),
+            ("level", "Level", self._s(160), "w"),
+            ("sequence", "Sequence", self._s(190), "w"),
             ("preset", "Preset", self._s(280), "w"),
-            ("status", "Status", self._s(180), "w"),
-            ("notes", "Notes", self._s(280), "w"),
+            ("added", "Added", self._s(150), "w"),
         ):
             self.tree.heading(name, text=title)
             self.tree.column(name, width=width, anchor=anchor, stretch=(name != "enabled"))
@@ -987,7 +1026,7 @@ class MRQLauncher(tk.Tk):
             self.inspector_vars["validation"].set("Validation: -")
             return
 
-        job_name = task.notes.strip() or soft_name(task.sequence)
+        job_name = soft_name(task.sequence)
         valid = all([task.uproject, task.level, task.sequence, task.preset])
 
         self.inspector_vars["job"].set(job_name)
@@ -997,7 +1036,7 @@ class MRQLauncher(tk.Tk):
         self.inspector_vars["sequence"].set(task.sequence or "-")
         self.inspector_vars["preset"].set(task.preset or "-")
         self.inspector_vars["output"].set(task.output_dir or "Preset default")
-        self.inspector_vars["notes"].set(task.notes or "-")
+        self.inspector_vars["notes"].set("-")
         self.inspector_vars["validation"].set(f"Validation: {'Ready' if valid else 'Incomplete'}")
 
     def _update_command_preview(self):
@@ -1095,15 +1134,15 @@ class MRQLauncher(tk.Tk):
     def _row_values(self, i: int):
         t = self.settings.tasks[i]
         st = self.state[i]["status"] if i < len(self.state) else "Ready"
-        job_name = t.notes.strip() or soft_name(t.sequence)
+        job_name = soft_name(t.sequence)
         return (
             "✔" if t.enabled else "",
+            format_status_indicator(st, t.enabled),
             job_name,
             soft_name(t.level),
             soft_name(t.sequence),
             soft_name(t.preset),
-            st,
-            t.notes,
+            format_added_display(t.added_at),
         )
 
     def _set_status_async(self, idx: int, text: str):
@@ -1121,12 +1160,12 @@ class MRQLauncher(tk.Tk):
         query = self.var_task_filter.get().strip().lower() if hasattr(self, "var_task_filter") else ""
         for i, task in enumerate(self.settings.tasks):
             haystack = " ".join([
-                task.notes,
                 task.uproject,
                 task.level,
                 task.sequence,
                 task.preset,
                 task.output_dir,
+                task.added_at,
             ]).lower()
             if query and query not in haystack:
                 continue
@@ -1214,7 +1253,9 @@ class MRQLauncher(tk.Tk):
         # which original rows are duplicated.
         for idx in sorted(sel, reverse=True):
             src = self.settings.tasks[idx]
-            self.settings.tasks.insert(idx + 1, RenderTask(**asdict(src)))
+            clone_data = asdict(src)
+            clone_data["added_at"] = current_task_timestamp()
+            self.settings.tasks.insert(idx + 1, RenderTask(**clone_data))
             self.state.insert(idx + 1, default_task_state())
         self.refresh_tree()
 
@@ -1300,7 +1341,15 @@ class MRQLauncher(tk.Tk):
         self.var_resy.set(self.settings.resy)
         self.var_nts.set(self.settings.no_texture_streaming)
         self.var_extra.set(self.settings.extra_cli)
-        self.settings.tasks = [RenderTask(**{**it, **({"enabled": True} if "enabled" not in it else {})}) for it in data.get("tasks", [])]
+        self.settings.tasks = [
+            RenderTask(**{
+                **it,
+                **({"enabled": True} if "enabled" not in it else {}),
+                **({"notes": ""} if "notes" not in it else {}),
+                **({"added_at": current_task_timestamp()} if "added_at" not in it else {}),
+            })
+            for it in data.get("tasks", [])
+        ]
         self.state = [default_task_state() for _ in self.settings.tasks]
         self.refresh_tree()
         self._update_engine_labels()
@@ -1343,13 +1392,23 @@ class MRQLauncher(tk.Tk):
                 with open(p, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 if isinstance(data, dict) and all(k in data for k in ("uproject","level","sequence","preset")):
-                    self.settings.tasks.append(RenderTask(**{**data, **({"enabled": True} if "enabled" not in data else {})}))
+                    self.settings.tasks.append(RenderTask(**{
+                        **data,
+                        **({"enabled": True} if "enabled" not in data else {}),
+                        **({"notes": ""} if "notes" not in data else {}),
+                        **({"added_at": current_task_timestamp()} if "added_at" not in data else {}),
+                    }))
                     self.state.append(default_task_state())
                     loaded += 1
                 elif isinstance(data, dict) and "tasks" in data:
                     for it in data.get("tasks", []):
                         if all(k in it for k in ("uproject","level","sequence","preset")):
-                            self.settings.tasks.append(RenderTask(**{**it, **({"enabled": True} if "enabled" not in it else {})}))
+                            self.settings.tasks.append(RenderTask(**{
+                                **it,
+                                **({"enabled": True} if "enabled" not in it else {}),
+                                **({"notes": ""} if "notes" not in it else {}),
+                                **({"added_at": current_task_timestamp()} if "added_at" not in it else {}),
+                            }))
                             self.state.append(default_task_state())
                             loaded += 1
             except Exception as e:
