@@ -17,7 +17,7 @@ from tkinter import ttk
 # -------------------------------------------------
 # App meta
 # -------------------------------------------------
-APP_VERSION = "1.4.3"
+APP_VERSION = "1.4.4"
 # -------------------------------------------------
 # Helpers
 # -------------------------------------------------
@@ -534,7 +534,9 @@ class MRQLauncher(tk.Tk):
         sel = self._selected_indices()
         if not sel:
             return
-        for idx in sel:
+        # Iterate from bottom to top so index shifts do not affect
+        # which original rows are duplicated.
+        for idx in sorted(sel, reverse=True):
             src = self.settings.tasks[idx]
             self.settings.tasks.insert(idx + 1, RenderTask(**asdict(src)))
             self.state.insert(idx + 1, {"status": "—", "progress": None, "start": None, "end": None})
