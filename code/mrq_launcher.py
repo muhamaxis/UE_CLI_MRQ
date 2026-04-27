@@ -17,7 +17,7 @@ from tkinter import ttk
 # -------------------------------------------------
 # App meta
 # -------------------------------------------------
-APP_VERSION = "1.4.2"
+APP_VERSION = "1.4.3"
 # -------------------------------------------------
 # Helpers
 # -------------------------------------------------
@@ -420,6 +420,16 @@ class MRQLauncher(tk.Tk):
         self.log.pack(fill=tk.BOTH, expand=True)
 
         self.refresh_tree()
+
+    def _find_task_index_by_identity(self, task: RenderTask) -> Optional[int]:
+        """
+        Locate a task by object identity, not dataclass value equality.
+        This keeps duplicate tasks (same values) addressable as distinct rows.
+        """
+        for i, existing in enumerate(self.settings.tasks):
+            if existing is task:
+                return i
+        return None
 
     def _on_tree_right_click(self, event):
         """Select row under cursor and show the task context menu."""
@@ -894,11 +904,7 @@ class MRQLauncher(tk.Tk):
                 if not all([t.uproject, t.level, t.sequence, t.preset]):
                     self._log(f"[{idx}] Skipped: task is incomplete")
                     continue
-                gi = None
-                try:
-                    gi = self.settings.tasks.index(t)
-                except ValueError:
-                    gi = None
+                gi = self._find_task_index_by_identity(t)
 
                 if skip_next_pending > 0:
                     skip_next_pending -= 1
@@ -1102,11 +1108,9 @@ class MRQLauncher(tk.Tk):
                 continue
             self.runtime_q.put(t)
             if mark_queued:
-                try:
-                    gi = self.settings.tasks.index(t)
+                gi = self._find_task_index_by_identity(t)
+                if gi is not None:
                     self._set_status_async(gi, "Queued")
-                except ValueError:
-                    pass
             count += 1
         if count:
             self._log(f"{log_prefix}{count} task(s) to queue")
