@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.7.4"
+APP_VERSION = "1.7.5"
 
 UI_THEME = {
     "bg": "#111318",
@@ -2887,20 +2887,13 @@ class MRQLauncher(tk.Tk):
 # -------------------------------------------------
 
 def run_qt_shell() -> int:
-    """Launch the first PySide6 shell without replacing the Tkinter launcher."""
+    """Launch the PySide6 queue workspace without replacing the Tkinter launcher."""
     try:
+        from PySide6.QtCore import Qt
         from PySide6.QtWidgets import (
-            QApplication,
-            QFrame,
-            QHBoxLayout,
-            QLabel,
-            QMainWindow,
-            QPushButton,
-            QStatusBar,
-            QTableWidget,
-            QTextEdit,
-            QVBoxLayout,
-            QWidget,
+            QApplication, QAbstractItemView, QFileDialog, QFrame, QHBoxLayout,
+            QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QStatusBar,
+            QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
         )
     except ImportError as exc:
         print("PySide6 is required for the Qt shell. Install it with: pip install PySide6")
@@ -2908,14 +2901,30 @@ def run_qt_shell() -> int:
         return 1
 
     class QtMRQShell(QMainWindow):
-        """Minimal Qt window foundation for the future launcher UI."""
+        """Qt queue workspace backed by shared task/settings/core models."""
+
+        COLUMNS = ("Status", "Level", "Sequence", "Preset", "Running Time", "Start", "End")
 
         def __init__(self):
             super().__init__()
+            self.settings = AppSettings()
+            self.state: List[dict] = []
+            self.runtime_queue = RuntimeQueueCoordinator(
+                self._find_task_index_by_identity,
+                lambda: None,
+                self._set_status_from_core,
+                self._append_log,
+            )
+            self.table = None
+            self.filter_edit = None
+            self.command_preview = None
+            self.log_view = None
+            self.inspector_labels = {}
             self.setWindowTitle(f"MRQ Launcher (Qt Shell) ver {APP_VERSION}")
             self.resize(1280, 760)
             self.setMinimumSize(900, 560)
             self._build_ui()
+            self.refresh_queue_view()
 
         def _build_ui(self) -> None:
             root = QWidget(self)
@@ -2924,16 +2933,14 @@ def run_qt_shell() -> int:
             root_layout.setSpacing(8)
             self.setCentralWidget(root)
             root_layout.addWidget(self._build_header())
-
             body = QHBoxLayout()
             body.setSpacing(8)
             body.addWidget(self._build_queue_area(), 3)
             body.addWidget(self._build_inspector_area(), 1)
             root_layout.addLayout(body, 1)
             root_layout.addWidget(self._build_diagnostics_area())
-
             status = QStatusBar(self)
-            status.showMessage("Qt shell ready. Tkinter launcher remains the production UI.")
+            status.showMessage("Qt queue workspace ready. Runtime rendering will be connected in a later task.")
             self.setStatusBar(status)
 
         def _panel(self) -> QFrame:
@@ -2947,13 +2954,21 @@ def run_qt_shell() -> int:
             title_block = QVBoxLayout()
             title = QLabel("MRQ Launcher CLI")
             title.setStyleSheet("font-size: 20px; font-weight: 700;")
-            subtitle = QLabel("Qt shell foundation")
+            subtitle = QLabel("Qt queue workspace")
             subtitle.setStyleSheet("color: #8a94a6;")
             title_block.addWidget(title)
             title_block.addWidget(subtitle)
             layout.addLayout(title_block, 1)
-            for text in ("Load Queue", "Save Queue", "Minimal Mode"):
-                layout.addWidget(QPushButton(text))
+            load_button = QPushButton("Load Queue")
+            load_button.clicked.connect(self.load_queue_dialog)
+            save_button = QPushButton("Save Queue")
+            save_button.clicked.connect(self.save_queue_dialog)
+            minimal_button = QPushButton("Minimal Mode")
+            minimal_button.setEnabled(False)
+            minimal_button.setToolTip("Minimal Mode will be rebuilt after the Qt runtime workspace is connected.")
+            layout.addWidget(load_button)
+            layout.addWidget(save_button)
+            layout.addWidget(minimal_button)
             return panel
 
         def _build_queue_area(self) -> QFrame:
@@ -2961,60 +2976,374 @@ def run_qt_shell() -> int:
             layout = QVBoxLayout(panel)
             layout.addWidget(QLabel("Render Queue"))
             toolbar = QHBoxLayout()
-            for text in ("Add Job", "Edit", "Duplicate", "Remove", "Move Up", "Move Down", "Toggle"):
-                toolbar.addWidget(QPushButton(text))
+            for text, callback in (
+                ("Add Job", self.load_task_dialog),
+                ("Edit", self._edit_not_connected),
+                ("Duplicate", self.duplicate_selected),
+                ("Remove", self.remove_selected),
+                ("Move Up", lambda: self.move_selected(-1)),
+                ("Move Down", lambda: self.move_selected(1)),
+                ("Toggle", self.toggle_selected),
+            ):
+                button = QPushButton(text)
+                button.clicked.connect(callback)
+                toolbar.addWidget(button)
             toolbar.addStretch(1)
+            toolbar.addWidget(QLabel("Filter"))
+            self.filter_edit = QLineEdit(panel)
+            self.filter_edit.setPlaceholderText("Filter tasks")
+            self.filter_edit.textChanged.connect(self.refresh_queue_view)
+            toolbar.addWidget(self.filter_edit)
             layout.addLayout(toolbar)
-            table = QTableWidget(0, 7, panel)
-            table.setHorizontalHeaderLabels(["Status", "Level", "Sequence", "Preset", "Running Time", "Start", "End"])
-            layout.addWidget(table, 1)
+            self.table = QTableWidget(0, len(self.COLUMNS), panel)
+            self.table.setHorizontalHeaderLabels(list(self.COLUMNS))
+            self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+            self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+            self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+            self.table.itemSelectionChanged.connect(self._on_selection_changed)
+            self.table.doubleClicked.connect(lambda *_: self.toggle_selected())
+            layout.addWidget(self.table, 1)
             return panel
 
         def _build_inspector_area(self) -> QFrame:
             panel = self._panel()
             layout = QVBoxLayout(panel)
             layout.addWidget(QLabel("Job Inspector"))
-            for text in (
-                "Job Name: No selection",
-                "Enabled: -",
-                "Project: -",
-                "Level: -",
-                "Sequence: -",
-                "Preset: -",
-                "Output Directory: -",
-                "Validation: -",
+            for key, text in (
+                ("job", "Job Name: No selection"), ("enabled", "Enabled: -"),
+                ("project", "Project: -"), ("level", "Level: -"),
+                ("sequence", "Sequence: -"), ("preset", "Preset: -"),
+                ("output", "Output Directory: -"), ("validation", "Validation: -"),
             ):
                 label = QLabel(text)
                 label.setWordWrap(True)
+                self.inspector_labels[key] = label
                 layout.addWidget(label)
             layout.addStretch(1)
-            layout.addWidget(QPushButton("Copy Command"))
-            layout.addWidget(QPushButton("Open Output Folder"))
+            copy_button = QPushButton("Copy Command")
+            copy_button.clicked.connect(self.copy_command_preview)
+            layout.addWidget(copy_button)
             return panel
 
         def _build_diagnostics_area(self) -> QFrame:
             panel = self._panel()
             layout = QVBoxLayout(panel)
             controls = QHBoxLayout()
-            for text in ("Render Enabled", "Render Selected", "Queue Selected", "Render All", "Stop Current Render", "Stop All"):
-                controls.addWidget(QPushButton(text))
+            for text, callback in (
+                ("Render Enabled", self.queue_enabled), ("Render Selected", self.queue_selected),
+                ("Queue Selected", self.queue_selected_or_enabled), ("Render All", self.queue_all),
+            ):
+                button = QPushButton(text)
+                button.clicked.connect(callback)
+                controls.addWidget(button)
+            stop_current = QPushButton("Stop Current Render")
+            stop_current.setEnabled(False)
+            stop_all = QPushButton("Stop All")
+            stop_all.clicked.connect(self.clear_pending_queue)
+            controls.addWidget(stop_current)
+            controls.addWidget(stop_all)
             controls.addStretch(1)
             layout.addLayout(controls)
             diagnostics = QHBoxLayout()
-            command_preview = QTextEdit(panel)
-            command_preview.setReadOnly(True)
-            command_preview.setPlaceholderText("Command preview will be connected in a later task.")
-            log_view = QTextEdit(panel)
-            log_view.setReadOnly(True)
-            log_view.setPlaceholderText("Runtime log will be connected in a later task.")
-            diagnostics.addWidget(command_preview, 1)
-            diagnostics.addWidget(log_view, 1)
+            self.command_preview = QTextEdit(panel)
+            self.command_preview.setReadOnly(True)
+            self.command_preview.setPlaceholderText("Select a task to inspect the generated command line.")
+            self.log_view = QTextEdit(panel)
+            self.log_view.setReadOnly(True)
+            diagnostics.addWidget(self.command_preview, 1)
+            diagnostics.addWidget(self.log_view, 1)
             layout.addLayout(diagnostics)
             return panel
+
+        def _ensure_state(self) -> None:
+            while len(self.state) < len(self.settings.tasks):
+                self.state.append(default_task_state())
+            if len(self.state) > len(self.settings.tasks):
+                self.state = self.state[:len(self.settings.tasks)]
+
+        def _visible_task_indices(self) -> List[int]:
+            query = self.filter_edit.text().strip().lower() if self.filter_edit else ""
+            visible = []
+            for idx, task in enumerate(self.settings.tasks):
+                state = self.state[idx] if idx < len(self.state) else default_task_state()
+                haystack = " ".join([task.uproject, task.level, task.sequence, task.preset, task.output_dir, state.get("status", "Ready")]).lower()
+                if not query or query in haystack:
+                    visible.append(idx)
+            return visible
+
+        def refresh_queue_view(self) -> None:
+            self._ensure_state()
+            if not self.table:
+                return
+            selected_indices = set(self.selected_indices())
+            visible_indices = self._visible_task_indices()
+            self.table.setRowCount(len(visible_indices))
+            for row, task_index in enumerate(visible_indices):
+                task = self.settings.tasks[task_index]
+                state = self.state[task_index] if task_index < len(self.state) else default_task_state()
+                values = (
+                    get_status_display(state.get("status", "Ready"), task.enabled),
+                    soft_name(task.level), soft_name(task.sequence), soft_name(task.preset),
+                    format_runtime_display(state), format_state_time_display(state.get("start")),
+                    format_state_time_display(state.get("end")),
+                )
+                for column, value in enumerate(values):
+                    item = QTableWidgetItem(value)
+                    item.setData(Qt.UserRole, task_index)
+                    self.table.setItem(row, column, item)
+            self.table.resizeColumnsToContents()
+            for row, task_index in enumerate(visible_indices):
+                if task_index in selected_indices:
+                    self.table.selectRow(row)
+            self._update_inspector()
+            self._update_command_preview()
+            self._update_status_bar()
+
+        def selected_indices(self) -> List[int]:
+            if not self.table:
+                return []
+            indices = []
+            seen = set()
+            for item in self.table.selectedItems():
+                task_index = item.data(Qt.UserRole)
+                if isinstance(task_index, int) and task_index not in seen:
+                    seen.add(task_index)
+                    indices.append(task_index)
+            return sorted(indices)
+
+        def _selected_task(self) -> Optional[RenderTask]:
+            indices = self.selected_indices()
+            if not indices:
+                return None
+            idx = indices[0]
+            return self.settings.tasks[idx] if 0 <= idx < len(self.settings.tasks) else None
+
+        def _collect(self, only_enabled: bool = False, only_selected: bool = False) -> List[RenderTask]:
+            tasks = [self.settings.tasks[idx] for idx in self.selected_indices()] if only_selected else list(self.settings.tasks)
+            return [task for task in tasks if task.enabled] if only_enabled else tasks
+
+        def _find_task_index_by_identity(self, task: RenderTask) -> Optional[int]:
+            for i, existing in enumerate(self.settings.tasks):
+                if existing is task:
+                    return i
+            return None
+
+        def _set_status_from_core(self, idx: int, text: str) -> None:
+            self._ensure_state()
+            if 0 <= idx < len(self.state):
+                self.state[idx]["status"] = text
+                if text == TaskRuntimeStatus.QUEUED:
+                    self.state[idx]["progress"] = 0
+                elif text.startswith(TaskRuntimeStatus.DONE):
+                    self.state[idx]["progress"] = 100
+            self.refresh_queue_view()
+
+        def _append_log(self, message: str) -> None:
+            if self.log_view:
+                self.log_view.append(message)
+
+        def _on_selection_changed(self) -> None:
+            self._update_inspector()
+            self._update_command_preview()
+            self._update_status_bar()
+
+        def _update_inspector(self) -> None:
+            task = self._selected_task()
+            if task is None:
+                values = {
+                    "job": "Job Name: No selection", "enabled": "Enabled: -", "project": "Project: -",
+                    "level": "Level: -", "sequence": "Sequence: -", "preset": "Preset: -",
+                    "output": "Output Directory: -", "validation": "Validation: -",
+                }
+            else:
+                valid = all([task.uproject, task.level, task.sequence, task.preset])
+                values = {
+                    "job": f"Job Name: {soft_name(task.sequence)}", "enabled": f"Enabled: {'Yes' if task.enabled else 'No'}",
+                    "project": f"Project: {task.uproject or '-'}", "level": f"Level: {task.level or '-'}",
+                    "sequence": f"Sequence: {task.sequence or '-'}", "preset": f"Preset: {task.preset or '-'}",
+                    "output": f"Output Directory: {task.output_dir or 'Preset default'}",
+                    "validation": f"Validation: {'Ready' if valid else 'Incomplete'}",
+                }
+            for key, value in values.items():
+                label = self.inspector_labels.get(key)
+                if label:
+                    label.setText(value)
+
+        def _build_command_preview_for_task(self, task: RenderTask) -> str:
+            ue_cmd = self.settings.ue_cmd or "<UnrealEditor-Cmd.exe>"
+            cmd = [ue_cmd, task.uproject or "<uproject>", task.level.split(".")[0] if task.level else "<map>", "-game"]
+            cmd += [f'-LevelSequence="{task.sequence or "<sequence>"}"', f'-MoviePipelineConfig="{task.preset or "<preset>"}"', "-log"]
+            cmd.append("-windowed" if self.settings.windowed else "-fullscreen")
+            cmd += [f"-ResX={self.settings.resx}", f"-ResY={self.settings.resy}"]
+            if self.settings.no_texture_streaming:
+                cmd.append("-notexturestreaming")
+            extra = (self.settings.extra_cli or "").strip()
+            if extra:
+                try:
+                    cmd += shlex.split(extra)
+                except ValueError:
+                    cmd.append(extra)
+            if task.output_dir:
+                cmd.append(f'-OutputDirectory="{task.output_dir}"')
+            return " \\\n".join(cmd)
+
+        def _update_command_preview(self) -> None:
+            if not self.command_preview:
+                return
+            task = self._selected_task()
+            self.command_preview.setPlainText(self._build_command_preview_for_task(task) if task else "Select a task to inspect the generated command line.")
+
+        def _update_status_bar(self) -> None:
+            queued = sum(1 for state in self.state if state.get("status") == TaskRuntimeStatus.QUEUED)
+            ready = sum(1 for state in self.state if state.get("status", TaskRuntimeStatus.READY) == TaskRuntimeStatus.READY)
+            enabled = sum(1 for task in self.settings.tasks if task.enabled)
+            self.statusBar().showMessage(f"Tasks: {len(self.settings.tasks)} | Enabled: {enabled} | Ready: {ready} | Queued: {queued}")
+
+        def load_queue_dialog(self) -> None:
+            path, _ = QFileDialog.getOpenFileName(self, "Load Queue", "", "JSON (*.json);;All Files (*.*)")
+            if not path:
+                return
+            try:
+                config, tasks = PersistenceRepository.load_queue(path, self.settings)
+            except PersistenceError as exc:
+                QMessageBox.critical(self, "Load Queue", str(exc))
+                return
+            for key, value in config.items():
+                if hasattr(self.settings, key):
+                    setattr(self.settings, key, value)
+            self.settings.tasks = tasks
+            self.state = [default_task_state() for _ in self.settings.tasks]
+            self.runtime_queue.clear_pending(TaskRuntimeStatus.CANCELLED_QUEUE)
+            self.refresh_queue_view()
+            self._append_log(f"[Qt] Loaded queue: {path}")
+
+        def save_queue_dialog(self) -> None:
+            path, _ = QFileDialog.getSaveFileName(self, "Save Queue", "", "JSON (*.json);;All Files (*.*)")
+            if not path:
+                return
+            if not path.lower().endswith(".json"):
+                path += ".json"
+            config = {key: getattr(self.settings, key) for key in PersistenceRepository.QUEUE_CONFIG_FIELDS}
+            try:
+                PersistenceRepository.save_queue(path, config, self.settings.tasks)
+            except Exception as exc:
+                QMessageBox.critical(self, "Save Queue", str(exc))
+                return
+            self._append_log(f"[Qt] Saved queue: {path}")
+
+        def load_task_dialog(self) -> None:
+            paths, _ = QFileDialog.getOpenFileNames(self, "Load Task JSON(s)", "", "JSON (*.json);;All Files (*.*)")
+            if not paths:
+                return
+            loaded = 0
+            for path in paths:
+                try:
+                    tasks = PersistenceRepository.load_task_file(path)
+                except PersistenceError as exc:
+                    QMessageBox.critical(self, "Load Task", f"{os.path.basename(path)}: {exc}")
+                    continue
+                self.settings.tasks.extend(tasks)
+                loaded += len(tasks)
+            self._ensure_state()
+            self.refresh_queue_view()
+            self._append_log(f"[Qt] Loaded {loaded} task(s).")
+
+        def duplicate_selected(self) -> None:
+            for idx in sorted(self.selected_indices(), reverse=True):
+                clone_data = asdict(self.settings.tasks[idx])
+                clone_data["added_at"] = current_task_timestamp()
+                self.settings.tasks.insert(idx + 1, RenderTask(**clone_data))
+                self.state.insert(idx + 1, default_task_state())
+            self.refresh_queue_view()
+
+        def remove_selected(self) -> None:
+            indices = self.selected_indices()
+            if not indices:
+                return
+            self.runtime_queue.remove_tasks([self.settings.tasks[idx] for idx in indices])
+            for idx in sorted(indices, reverse=True):
+                del self.settings.tasks[idx]
+                del self.state[idx]
+            self.refresh_queue_view()
+
+        def move_selected(self, delta: int) -> None:
+            indices = self.selected_indices()
+            if len(indices) != 1:
+                return
+            idx = indices[0]
+            new_idx = idx + delta
+            if not (0 <= new_idx < len(self.settings.tasks)):
+                return
+            self.settings.tasks[idx], self.settings.tasks[new_idx] = self.settings.tasks[new_idx], self.settings.tasks[idx]
+            self.state[idx], self.state[new_idx] = self.state[new_idx], self.state[idx]
+            self.refresh_queue_view()
+            self._select_task_index(new_idx)
+
+        def _select_task_index(self, task_index: int) -> None:
+            for row in range(self.table.rowCount()):
+                item = self.table.item(row, 0)
+                if item and item.data(Qt.UserRole) == task_index:
+                    self.table.selectRow(row)
+                    break
+
+        def toggle_selected(self) -> None:
+            disabled_tasks = []
+            for idx in self.selected_indices():
+                task = self.settings.tasks[idx]
+                task.enabled = not task.enabled
+                self.state[idx] = default_task_state()
+                if not task.enabled:
+                    disabled_tasks.append(task)
+            if disabled_tasks:
+                self.runtime_queue.remove_tasks(disabled_tasks)
+            self.refresh_queue_view()
+
+        def queue_selected(self) -> None:
+            tasks = self._collect(only_selected=True)
+            if not tasks:
+                QMessageBox.information(self, "Render Selected", "Select at least one task in the table.")
+                return
+            self._enqueue_tasks(tasks)
+
+        def queue_enabled(self) -> None:
+            tasks = self._collect(only_enabled=True)
+            if not tasks:
+                QMessageBox.information(self, "Render Enabled", "No enabled tasks to run.")
+                return
+            self._enqueue_tasks(tasks)
+
+        def queue_all(self) -> None:
+            self._enqueue_tasks(self._collect())
+
+        def queue_selected_or_enabled(self) -> None:
+            tasks = self._collect(only_selected=True) or self._collect(only_enabled=True)
+            if not tasks:
+                QMessageBox.information(self, "Queue Selected", "Nothing to enqueue: select tasks or enable some tasks.")
+                return
+            self._enqueue_tasks(tasks)
+
+        def _enqueue_tasks(self, tasks: List[RenderTask]) -> None:
+            changed = self.runtime_queue.enqueue_tasks(tasks, mark_queued=True, log_prefix="[Qt] Queued ")
+            if changed:
+                self.refresh_queue_view()
+
+        def clear_pending_queue(self) -> None:
+            self.runtime_queue.clear_pending(TaskRuntimeStatus.CANCELLED_QUEUE)
+            self.refresh_queue_view()
+
+        def copy_command_preview(self) -> None:
+            if self.command_preview:
+                QApplication.clipboard().setText(self.command_preview.toPlainText())
+                self._append_log("[Qt] Command preview copied to clipboard.")
+
+        def _edit_not_connected(self) -> None:
+            QMessageBox.information(self, "Edit", "Task editing will be connected in a later Qt task.")
 
     app = QApplication.instance() or QApplication(sys.argv)
     window = QtMRQShell()
     window.show()
+    return app.exec()
+
     return app.exec()
 
 # -------------------------------------------------
