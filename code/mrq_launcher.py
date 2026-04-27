@@ -18,7 +18,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.5.2"
+APP_VERSION = "1.5.3"
 
 UI_THEME = {
     "bg": "#111318",
@@ -310,13 +310,8 @@ class MRQLauncher(tk.Tk):
         upper.pack(fill=tk.BOTH, expand=True)
 
         self.queue_panel = self._create_panel(upper, padx=12, pady=12)
-        self.queue_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, self._s(8)))
+        self.queue_panel.pack(fill=tk.BOTH, expand=True)
         self._build_queue_workspace(self.queue_panel)
-
-        self.inspector_panel = self._create_panel(upper, width=self._s(360), padx=12, pady=12)
-        self.inspector_panel.pack(side=tk.RIGHT, fill=tk.Y)
-        self.inspector_panel.pack_propagate(False)
-        self._build_inspector_panel(self.inspector_panel)
 
         self.bottom_panel = self._create_panel(body, padx=12, pady=12)
         self.bottom_panel.pack(fill=tk.BOTH, expand=False, pady=(self._s(8), 0))
