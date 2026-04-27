@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.6.5"
+APP_VERSION = "1.6.6"
 
 UI_THEME = {
     "bg": "#111318",
@@ -1123,8 +1123,7 @@ class MRQLauncher(tk.Tk):
         self.minimal_footer.pack(fill=tk.X, pady=(10, 0))
 
         self.minsize(*self.minimal_mode_minsize)
-        self._set_tree_display_columns()
-        self._autosize_tree_columns()
+        self.refresh_tree()
         self.update_idletasks()
         self.geometry(self._compute_minimal_geometry())
         self._queue_tree_refresh()
@@ -1148,8 +1147,7 @@ class MRQLauncher(tk.Tk):
         self.queue_hscroll.pack(fill=tk.X, pady=(8, 0), after=self.tree_shell)
 
         self.minsize(*self.full_mode_minsize)
-        self._set_tree_display_columns()
-        self._apply_default_tree_columns()
+        self.refresh_tree()
         if self._full_mode_geometry:
             self.geometry(self._full_mode_geometry)
         self._queue_tree_refresh()
