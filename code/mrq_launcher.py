@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.6.7"
+APP_VERSION = "1.6.8"
 
 UI_THEME = {
     "bg": "#111318",
@@ -360,11 +360,13 @@ class MRQLauncher(tk.Tk):
         self.current_process: Optional[subprocess.Popen] = None
         self._current_global_idx: Optional[int] = None
         self.stop_all = False
+        self.cancel_current_requested = False
         self.minimal_mode = False
         self._full_mode_geometry: Optional[str] = None
         self.session_total_var = StringVar(value="Session total: 00:00:00")
         self.current_task_var = StringVar(value="Current task: Idle")
         self.current_status_var = StringVar(value="Status: Idle")
+        self.current_task_time_var = StringVar(value="Task time: —")
         self.current_progress_var = StringVar(value="0%")
         self.render_progress_value = tk.DoubleVar(value=0.0)
         self.tree_columns = ("status", "level", "sequence", "preset", "runtime", "start", "end")
@@ -547,7 +549,7 @@ class MRQLauncher(tk.Tk):
         m_run.add_command(label="Add Task(s) to Queue", command=self.enqueue_selected_or_enabled)
         m_run.add_separator()
         m_run.add_command(label="Clear Status", command=self.clear_status_selected)
-        m_run.add_command(label="Cancel Current", command=self.cancel_current)
+        m_run.add_command(label="Stop Current Render", command=self.cancel_current)
         m_run.add_command(label="Cancel All", command=self.cancel_all)
         menubar.add_cascade(label="Render", menu=m_run)
 
@@ -745,6 +747,8 @@ class MRQLauncher(tk.Tk):
         tk.Label(minimal_title, text="Minimal Mode", bg=UI_THEME["panel"], fg=UI_THEME["text"], font=("Segoe UI", 14, "bold")).pack(anchor="w")
         tk.Label(minimal_title, text="Execution only view with compact columns.", bg=UI_THEME["panel"], fg=UI_THEME["muted"], font=("Segoe UI", 9)).pack(anchor="w", pady=(2, 0))
         self._make_button(self.minimal_header, "Exit Minimal Mode", self.exit_minimal_mode).pack(side=tk.RIGHT)
+        self._make_button(self.minimal_header, "Stop All", self.cancel_all, variant="danger").pack(side=tk.RIGHT, padx=(0, 6))
+        self._make_button(self.minimal_header, "Stop Current", self.cancel_current).pack(side=tk.RIGHT, padx=(0, 6))
 
         self.queue_toolbar = tk.Frame(parent, bg=UI_THEME["panel"])
         self.queue_toolbar.pack(fill=tk.X, pady=(0, 10))
@@ -833,6 +837,8 @@ class MRQLauncher(tk.Tk):
         footer_left = tk.Frame(self.minimal_footer, bg=UI_THEME["panel"])
         footer_left.pack(side=tk.LEFT)
         tk.Label(footer_left, textvariable=self.session_total_var, bg=UI_THEME["panel"], fg=UI_THEME["muted"], font=("Segoe UI", 10)).pack(side=tk.LEFT)
+        tk.Label(footer_left, text="  •  ", bg=UI_THEME["panel"], fg=UI_THEME["muted"], font=("Segoe UI", 10)).pack(side=tk.LEFT)
+        tk.Label(footer_left, textvariable=self.current_task_time_var, bg=UI_THEME["panel"], fg=UI_THEME["muted"], font=("Segoe UI", 10)).pack(side=tk.LEFT)
 
         footer_center = tk.Frame(self.minimal_footer, bg=UI_THEME["panel"])
         footer_center.pack(side=tk.LEFT, expand=True)
@@ -923,6 +929,7 @@ class MRQLauncher(tk.Tk):
         self.btn_render_all = self._make_button(controls, "Render All", self.run_all)
         self.btn_render_all.pack(side=tk.LEFT, padx=(0, 6))
         self._make_button(controls, "Clear Status", self.clear_status_selected).pack(side=tk.LEFT, padx=(0, 6))
+        self._make_button(controls, "Stop Current Render", self.cancel_current).pack(side=tk.LEFT, padx=(0, 6))
         self._make_button(controls, "Stop All", self.cancel_all, variant="danger").pack(side=tk.LEFT)
         self.render_action_buttons = [self.btn_render_enabled, self.btn_render_selected, self.btn_render_all]
 
@@ -1506,6 +1513,7 @@ class MRQLauncher(tk.Tk):
             state = self.state[task_idx] if 0 <= task_idx < len(self.state) else default_task_state()
             self.current_task_var.set(f"Current task: {soft_name(task.sequence)}")
             self.current_status_var.set(f"Status: {state.get('status', 'Ready')}")
+            self.current_task_time_var.set(f"Task time: {format_runtime_display(state)}")
             progress = state.get("progress")
             if progress is None:
                 if state.get("status", "").startswith("Done"):
@@ -1519,6 +1527,7 @@ class MRQLauncher(tk.Tk):
         else:
             self.current_task_var.set("Current task: Idle")
             self.current_status_var.set("Status: Idle")
+            self.current_task_time_var.set("Task time: —")
             self.render_progress_value.set(0.0)
             self.current_progress_var.set("0%")
 
@@ -2091,6 +2100,7 @@ class MRQLauncher(tk.Tk):
             return
 
         self.stop_all = False
+        self.cancel_current_requested = False
         # Preload tasks into runtime queue via helper (sets statuses too)
         if tasks:
             self._enqueue_tasks(tasks, log_prefix="== Enqueued ")
@@ -2136,6 +2146,7 @@ class MRQLauncher(tk.Tk):
                 attempt = 0
                 logfile = self._task_logfile(t)
 
+                cancelled_current = False
                 while attempt <= retries and not self.stop_all:
                     attempt += 1
                     # Build UE command with render options from UI
@@ -2252,6 +2263,17 @@ class MRQLauncher(tk.Tk):
                         if self.state[gi]["start"]:
                             dur = int(self.state[gi]["end"] - self.state[gi]["start"])  # seconds
 
+                    if self.cancel_current_requested:
+                        self.cancel_current_requested = False
+                        cancelled_current = True
+                        if gi is not None:
+                            self._set_status_async(gi, "Cancelled")
+                            if self.state[gi].get("start") and self.state[gi].get("end"):
+                                dur_txt = _fmt_hhmmss(int(self.state[gi]["end"] - self.state[gi]["start"]))
+                                self._log(f"[{idx}] Current task cancelled by user | Duration: {dur_txt}")
+                            else:
+                                self._log(f"[{idx}] Current task cancelled by user")
+                        break
                     if rc == 0:
                         if gi is not None:
                             if dur is not None:
@@ -2284,6 +2306,9 @@ class MRQLauncher(tk.Tk):
                         if attempt > retries:
                             break
 
+                if cancelled_current and not self.stop_all:
+                    continue
+
                 if self.stop_all:
                     self._log("[Cancel] Stop-all while processing queue")
                     break
@@ -2301,22 +2326,21 @@ class MRQLauncher(tk.Tk):
     def cancel_current(self):
         if self.current_process and self.current_process.poll() is None:
             try:
+                self.cancel_current_requested = True
                 self.current_process.terminate()
-                self._log("[Cancel] Sent terminate to current task…")
-                if self._current_global_idx is not None:
-                    self._set_status_async(self._current_global_idx, "Cancelled")
+                self._log("[Cancel] Stop current render requested…")
                 timeout = int(self.var_kill_timeout.get())
                 if timeout > 0:
                     try:
                         self.current_process.wait(timeout=timeout)
                     except Exception:
                         self.current_process.kill()
-                        self._log("[Cancel] Kill after timeout")
+                        self._log("[Cancel] Kill current render after timeout")
             except Exception as e:
+                self.cancel_current_requested = False
                 self._log(f"[Cancel] Error: {e}")
         else:
             self._log("[Cancel] No running process")
-
     def cancel_all(self):
         self.stop_all = True
         self.cancel_current()
