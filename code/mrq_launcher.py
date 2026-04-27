@@ -11,6 +11,7 @@ from typing import List, Optional
 from datetime import datetime, timedelta
 
 import tkinter as tk
+from tkinter import font as tkfont
 from tkinter import filedialog, messagebox, StringVar
 from tkinter import ttk
 
@@ -18,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.5.7"
+APP_VERSION = "1.6.0"
 
 UI_THEME = {
     "bg": "#111318",
@@ -98,6 +99,36 @@ def current_task_timestamp() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
+def format_state_time_display(value: Optional[float]) -> str:
+    if not value:
+        return "—"
+    try:
+        dt = datetime.fromtimestamp(float(value))
+    except Exception:
+        return "—"
+    return dt.strftime("%H:%M:%S")
+
+
+def format_duration_hms(value: Optional[float]) -> str:
+    if value is None:
+        return "—"
+    total_seconds = max(0, int(round(float(value))))
+    hours, rem = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(rem, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
+def format_runtime_display(state: dict) -> str:
+    start = state.get("start")
+    end = state.get("end")
+    if start:
+        if end:
+            return format_duration_hms(end - start)
+        if str(state.get("status", "")).startswith("Rendering"):
+            return format_duration_hms(time.time() - start)
+    return "—"
+
+
 def format_added_display(value: str) -> str:
     if not value:
         return "—"
@@ -117,49 +148,12 @@ def format_added_display(value: str) -> str:
     return dt.strftime("%Y-%m-%d %H:%M")
 
 
-def format_duration_compact(seconds: Optional[int]) -> str:
-    if seconds is None:
-        return ""
-    seconds = max(0, int(seconds))
-    hours, rem = divmod(seconds, 3600)
-    minutes, secs = divmod(rem, 60)
-    if hours > 0:
-        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
-    return f"{minutes:02d}:{secs:02d}"
-
-
-def format_running_time_display(state: dict) -> str:
-    start = state.get("start")
-    end = state.get("end")
-    status = (state.get("status") or "").strip()
-
-    if start and end:
-        return format_duration_compact(int(end - start))
-
-    if start and status.startswith("Rendering"):
-        return format_duration_compact(int(time.time() - start))
-
-    if start and status.startswith("Failed"):
-        return format_duration_compact(int(time.time() - start))
-
-    return ""
-
-
-def format_clock_display(timestamp: Optional[float]) -> str:
-    if not timestamp:
-        return ""
-    try:
-        return datetime.fromtimestamp(timestamp).strftime("%H:%M:%S")
-    except Exception:
-        return ""
-
-
 def get_status_display(status: str, enabled: bool) -> str:
     if not enabled:
         return "Disabled"
     status = (status or "Ready").strip()
     if status.startswith("Cancelled"):
-        return "Cancelled"
+        return "Failed"
     if status.startswith("Failed"):
         return "Failed"
     if status.startswith("Done"):
@@ -171,7 +165,6 @@ def get_status_display(status: str, enabled: bool) -> str:
     if status == "Queued":
         return "Queued"
     return "Ready"
-
 
 def get_status_kind(status: str, enabled: bool) -> str:
     if not enabled:
@@ -242,6 +235,7 @@ class AppSettings:
     resy: int = 720
     no_texture_streaming: bool = True
     extra_cli: str = ""  # free-form string for additional arguments
+    auto_minimal_on_render: bool = True
 
 # -------------------------------------------------
 # Task Editor (single window for selecting paths)
@@ -359,18 +353,44 @@ class MRQLauncher(tk.Tk):
         self.title(f"MRQ Launcher (CLI) ver {APP_VERSION}")
         self.geometry(f"{self._s(1480)}x{self._s(920)}")
         self.minsize(self._s(1280), self._s(760))
+        self.full_mode_minsize = (self._s(1280), self._s(760))
+        self.minimal_mode_minsize = (self._s(760), self._s(360))
         self.settings = AppSettings()
         self.current_process: Optional[subprocess.Popen] = None
         self._current_global_idx: Optional[int] = None
         self.stop_all = False
+        self.minimal_mode = False
+        self._full_mode_geometry: Optional[str] = None
+        self.session_total_var = StringVar(value="Session total: 00:00:00")
+        self.current_task_var = StringVar(value="Current task: Idle")
+        self.current_status_var = StringVar(value="Status: Idle")
+        self.current_progress_var = StringVar(value="0%")
+        self.render_progress_value = tk.DoubleVar(value=0.0)
+        self.tree_columns = ("status", "level", "sequence", "preset", "runtime", "start", "end")
+        self.tree_column_titles = {
+            "status": "Status",
+            "level": "Level",
+            "sequence": "Sequence",
+            "preset": "Preset",
+            "runtime": "Running Time",
+            "start": "Start",
+            "end": "End",
+        }
+        self.tree_column_defaults = {
+            "status": self._s(180),
+            "level": self._s(150),
+            "sequence": self._s(220),
+            "preset": self._s(320),
+            "runtime": self._s(130),
+            "start": self._s(120),
+            "end": self._s(120),
+        }
         self.log_queue: "queue.Queue[str]" = queue.Queue()
         self.ui_queue: "queue.Queue[tuple]" = queue.Queue()
         self.state: List[dict] = []  # {status, progress, start, end}
         # --- New: shared runtime task queue and worker flag
         self.runtime_q: "queue.Queue[RenderTask]" = queue.Queue()
         self.worker_running: bool = False
-        # Session time label data
-        self._session_total_label: Optional[tk.Label] = None
         self.command_preview: Optional[tk.Text] = None
         self.inspector_vars = {}
         self.status_pill_widgets = {}
@@ -402,28 +422,28 @@ class MRQLauncher(tk.Tk):
         self._configure_styles()
         self._build_menu()
 
-        shell = tk.Frame(self, bg=UI_THEME["bg"])
-        shell.pack(fill=tk.BOTH, expand=True)
+        self.shell = tk.Frame(self, bg=UI_THEME["bg"])
+        self.shell.pack(fill=tk.BOTH, expand=True)
 
-        self.header_panel = self._create_panel(shell, padx=14, pady=12)
+        self.header_panel = self._create_panel(self.shell, padx=14, pady=12)
         self.header_panel.pack(fill=tk.X, padx=self._s(12), pady=(self._s(12), self._s(8)))
         self._build_header(self.header_panel)
 
-        body = tk.Frame(shell, bg=UI_THEME["bg"])
-        body.pack(fill=tk.BOTH, expand=True, padx=self._s(12), pady=(0, self._s(8)))
+        self.body = tk.Frame(self.shell, bg=UI_THEME["bg"])
+        self.body.pack(fill=tk.BOTH, expand=True, padx=self._s(12), pady=(0, self._s(8)))
 
-        upper = tk.Frame(body, bg=UI_THEME["bg"])
-        upper.pack(fill=tk.BOTH, expand=True)
+        self.upper_body = tk.Frame(self.body, bg=UI_THEME["bg"])
+        self.upper_body.pack(fill=tk.BOTH, expand=True)
 
-        self.queue_panel = self._create_panel(upper, padx=12, pady=12)
+        self.queue_panel = self._create_panel(self.upper_body, padx=12, pady=12)
         self.queue_panel.pack(fill=tk.BOTH, expand=True)
         self._build_queue_workspace(self.queue_panel)
 
-        self.bottom_panel = self._create_panel(body, padx=12, pady=12)
+        self.bottom_panel = self._create_panel(self.body, padx=12, pady=12)
         self.bottom_panel.pack(fill=tk.BOTH, expand=False, pady=(self._s(8), 0))
         self._build_bottom_panel(self.bottom_panel)
 
-        self.status_bar = tk.Frame(shell, bg=UI_THEME["panel_alt"], highlightthickness=1, highlightbackground=UI_THEME["border"])
+        self.status_bar = tk.Frame(self.shell, bg=UI_THEME["panel_alt"], highlightthickness=1, highlightbackground=UI_THEME["border"])
         self.status_bar.pack(fill=tk.X, padx=self._s(12), pady=(0, self._s(12)))
         self._build_status_bar(self.status_bar)
 
@@ -618,6 +638,7 @@ class MRQLauncher(tk.Tk):
 
         actions = tk.Frame(top, bg=UI_THEME["panel"])
         actions.pack(side=tk.RIGHT)
+        self._make_button(actions, "Minimal Mode", self.toggle_minimal_mode).pack(side=tk.LEFT, padx=(0, 6))
         self._make_button(actions, "Load Queue", self.load_json_dialog).pack(side=tk.LEFT, padx=(0, 6))
         self._make_button(actions, "Save Queue", self.save_json_dialog).pack(side=tk.LEFT, padx=(0, 6))
         self._make_button(actions, "Save Queue Log", self.save_queue_log).pack(side=tk.LEFT)
@@ -639,6 +660,7 @@ class MRQLauncher(tk.Tk):
         self.var_resy = tk.IntVar(value=self.settings.resy)
         self.var_nts = tk.BooleanVar(value=self.settings.no_texture_streaming)
         self.var_extra = StringVar(value=self.settings.extra_cli)
+        self.var_auto_minimal = tk.BooleanVar(value=self.settings.auto_minimal_on_render)
 
         opts = tk.Frame(parent, bg=UI_THEME["panel"])
         opts.pack(fill=tk.X, pady=(12, 0))
@@ -659,6 +681,7 @@ class MRQLauncher(tk.Tk):
         tk.Label(opts, text="ResY", bg=UI_THEME["panel"], fg=UI_THEME["muted"], font=("Segoe UI", 9)).pack(side=tk.LEFT)
         tk.Spinbox(opts, from_=240, to=16384, width=6, textvariable=self.var_resy, bg=UI_THEME["entry"], fg=UI_THEME["text"], buttonbackground=UI_THEME["panel_soft"], insertbackground=UI_THEME["text"], relief=tk.FLAT).pack(side=tk.LEFT, padx=(6, 12))
         tk.Checkbutton(opts, text="No Texture Streaming", variable=self.var_nts, bg=UI_THEME["panel"], fg=UI_THEME["text"], selectcolor=UI_THEME["entry"], activebackground=UI_THEME["panel"], activeforeground=UI_THEME["text"]).pack(side=tk.LEFT, padx=(0, 12))
+        tk.Checkbutton(opts, text="Auto Minimal On Render", variable=self.var_auto_minimal, bg=UI_THEME["panel"], fg=UI_THEME["text"], selectcolor=UI_THEME["entry"], activebackground=UI_THEME["panel"], activeforeground=UI_THEME["text"]).pack(side=tk.LEFT, padx=(0, 12))
 
         tk.Label(opts, text="Extra CLI", bg=UI_THEME["panel"], fg=UI_THEME["muted"], font=("Segoe UI", 9)).pack(side=tk.LEFT)
         self.extra_entry = self._make_entry(opts, textvariable=self.var_extra, width=28)
@@ -673,6 +696,7 @@ class MRQLauncher(tk.Tk):
             self.var_resx,
             self.var_resy,
             self.var_nts,
+            self.var_auto_minimal,
             self.var_extra,
         )
         for tracked in tracked_vars:
@@ -707,12 +731,19 @@ class MRQLauncher(tk.Tk):
         self.sidebar_path_label.pack(anchor="w", pady=(6, 0))
 
     def _build_queue_workspace(self, parent):
-        self._section_title(parent, "Render Queue", "Main operational surface")
+        self.queue_section_header = self._section_title(parent, "Render Queue", "Main operational surface")
 
-        toolbar = tk.Frame(parent, bg=UI_THEME["panel"])
-        toolbar.pack(fill=tk.X, pady=(0, 10))
+        self.minimal_header = tk.Frame(parent, bg=UI_THEME["panel"])
+        minimal_title = tk.Frame(self.minimal_header, bg=UI_THEME["panel"])
+        minimal_title.pack(side=tk.LEFT, fill=tk.Y)
+        tk.Label(minimal_title, text="Minimal Mode", bg=UI_THEME["panel"], fg=UI_THEME["text"], font=("Segoe UI", 14, "bold")).pack(anchor="w")
+        tk.Label(minimal_title, text="Execution only view with compact columns.", bg=UI_THEME["panel"], fg=UI_THEME["muted"], font=("Segoe UI", 9)).pack(anchor="w", pady=(2, 0))
+        self._make_button(self.minimal_header, "Exit Minimal Mode", self.exit_minimal_mode).pack(side=tk.RIGHT)
 
-        left = tk.Frame(toolbar, bg=UI_THEME["panel"])
+        self.queue_toolbar = tk.Frame(parent, bg=UI_THEME["panel"])
+        self.queue_toolbar.pack(fill=tk.X, pady=(0, 10))
+
+        left = tk.Frame(self.queue_toolbar, bg=UI_THEME["panel"])
         left.pack(side=tk.LEFT)
         self._make_button(left, "Add Job", self.add_task).pack(side=tk.LEFT, padx=(0, 6))
         self._make_button(left, "Edit", self.edit_task).pack(side=tk.LEFT, padx=(0, 6))
@@ -722,7 +753,7 @@ class MRQLauncher(tk.Tk):
         self._make_button(left, "Move Down", lambda: self.move_selected(1)).pack(side=tk.LEFT, padx=(0, 6))
         self._make_button(left, "Toggle", self.toggle_selected).pack(side=tk.LEFT)
 
-        right = tk.Frame(toolbar, bg=UI_THEME["panel"])
+        right = tk.Frame(self.queue_toolbar, bg=UI_THEME["panel"])
         right.pack(side=tk.RIGHT, fill=tk.X)
         tk.Label(right, text="Filter", bg=UI_THEME["panel"], fg=UI_THEME["muted"], font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(0, 8))
         self.var_task_filter = StringVar()
@@ -730,31 +761,22 @@ class MRQLauncher(tk.Tk):
         self.filter_entry = self._make_entry(right, textvariable=self.var_task_filter, width=24)
         self.filter_entry.pack(side=tk.LEFT)
 
-        stats = tk.Frame(parent, bg=UI_THEME["panel"])
-        stats.pack(fill=tk.X, pady=(0, 10))
+        self.queue_stats_frame = tk.Frame(parent, bg=UI_THEME["panel"])
+        self.queue_stats_frame.pack(fill=tk.X, pady=(0, 10))
         self.queue_stats_var = StringVar(value="Total: 0 | Visible: 0 | Enabled: 0 | Selected: 0")
-        tk.Label(stats, textvariable=self.queue_stats_var, bg=UI_THEME["panel"], fg=UI_THEME["muted"], font=("Segoe UI", 9)).pack(side=tk.LEFT)
+        tk.Label(self.queue_stats_frame, textvariable=self.queue_stats_var, bg=UI_THEME["panel"], fg=UI_THEME["muted"], font=("Segoe UI", 9)).pack(side=tk.LEFT)
 
-        tree_shell = tk.Frame(parent, bg=UI_THEME["panel"])
-        tree_shell.pack(fill=tk.BOTH, expand=True)
+        self.tree_shell = tk.Frame(parent, bg=UI_THEME["panel"])
+        self.tree_shell.pack(fill=tk.BOTH, expand=True)
 
-        cols = ("status", "level", "sequence", "preset", "runtime", "start", "end")
-        self.tree = ttk.Treeview(tree_shell, columns=cols, show="headings", selectmode="extended")
-        for name, title, width, anchor in (
-            ("status", "Status", self._s(170), "w"),
-            ("level", "Level", self._s(150), "w"),
-            ("sequence", "Sequence", self._s(220), "w"),
-            ("preset", "Preset", self._s(300), "w"),
-            ("runtime", "Running Time", self._s(120), "center"),
-            ("start", "Start", self._s(100), "center"),
-            ("end", "End", self._s(100), "center"),
-        ):
-            self.tree.heading(name, text=title)
-            self.tree.column(name, width=width, anchor=anchor, stretch=True)
+        self.tree = ttk.Treeview(self.tree_shell, columns=self.tree_columns, show="headings", selectmode="extended")
+        for name in self.tree_columns:
+            self.tree.heading(name, text=self.tree_column_titles[name])
+            self.tree.column(name, width=self.tree_column_defaults[name], anchor="w", stretch=True)
 
         self.tree.tag_configure("status_ready", foreground=UI_THEME["text"])
         self.tree.tag_configure("status_queued", foreground="#FFD28A")
-        self.tree.tag_configure("status_rendering", foreground="#F0A54A", font=("Segoe UI", 9, "bold"))
+        self.tree.tag_configure("status_rendering", foreground="#F0B35A", font=("Segoe UI", 9, "bold"))
         self.tree.tag_configure("status_done", foreground="#8BE2B5")
         self.tree.tag_configure("status_failed", foreground="#FF9AA9")
         self.tree.tag_configure("status_disabled", foreground=UI_THEME["muted"])
@@ -764,7 +786,7 @@ class MRQLauncher(tk.Tk):
         self.tree.bind("<Double-1>", self.on_tree_dblclick)
         self.tree.bind("<space>", self.on_space_toggle)
         self.tree.bind("<<TreeviewSelect>>", self._on_tree_selection_changed)
-        self.tree.bind("<Configure>", lambda _e: self.after_idle(self._refresh_status_pills))
+        self.tree.bind("<Configure>", lambda _e: self._queue_tree_refresh())
         self.tree.bind("<MouseWheel>", lambda _e: self.after_idle(self._refresh_status_pills))
         self.tree.bind("<Button-4>", lambda _e: self.after_idle(self._refresh_status_pills))
         self.tree.bind("<Button-5>", lambda _e: self.after_idle(self._refresh_status_pills))
@@ -789,13 +811,34 @@ class MRQLauncher(tk.Tk):
         self.tree.bind("<Button-3>", self._on_tree_right_click)
         self.tree.bind("<Control-Button-1>", self._on_tree_right_click)
 
-        sb = ttk.Scrollbar(tree_shell, orient="vertical", command=self._on_tree_yview)
+        sb = ttk.Scrollbar(self.tree_shell, orient="vertical", command=self._on_tree_yview)
         self.tree.configure(yscrollcommand=sb.set)
         sb.pack(side=tk.RIGHT, fill=tk.Y)
 
-        hsb = ttk.Scrollbar(parent, orient="horizontal", command=self._on_tree_xview)
-        self.tree.configure(xscrollcommand=hsb.set)
-        hsb.pack(fill=tk.X, pady=(8, 0))
+        self.queue_hscroll = ttk.Scrollbar(parent, orient="horizontal", command=self._on_tree_xview)
+        self.tree.configure(xscrollcommand=self.queue_hscroll.set)
+        self.queue_hscroll.pack(fill=tk.X, pady=(8, 0))
+
+        self.minimal_footer = tk.Frame(parent, bg=UI_THEME["panel"])
+        footer_left = tk.Frame(self.minimal_footer, bg=UI_THEME["panel"])
+        footer_left.pack(side=tk.LEFT)
+        tk.Label(footer_left, textvariable=self.session_total_var, bg=UI_THEME["panel"], fg=UI_THEME["muted"], font=("Segoe UI", 10)).pack(side=tk.LEFT)
+
+        footer_center = tk.Frame(self.minimal_footer, bg=UI_THEME["panel"])
+        footer_center.pack(side=tk.LEFT, expand=True)
+        ttk.Progressbar(
+            footer_center,
+            variable=self.render_progress_value,
+            maximum=100.0,
+            length=self._s(220),
+            style="Dark.Horizontal.TProgressbar",
+        ).pack(side=tk.LEFT)
+        tk.Label(footer_center, textvariable=self.current_progress_var, bg=UI_THEME["panel"], fg=UI_THEME["text"], font=("Segoe UI", 9, "bold"), padx=10).pack(side=tk.LEFT)
+
+        footer_right = tk.Frame(self.minimal_footer, bg=UI_THEME["panel"])
+        footer_right.pack(side=tk.RIGHT)
+        tk.Label(footer_right, textvariable=self.current_task_var, bg=UI_THEME["panel"], fg=UI_THEME["text"], font=("Segoe UI", 10, "bold")).pack(side=tk.LEFT)
+        tk.Label(footer_right, textvariable=self.current_status_var, bg=UI_THEME["panel"], fg=UI_THEME["muted"], font=("Segoe UI", 10), padx=12).pack(side=tk.LEFT)
 
     def _build_inspector_panel(self, parent):
         self._section_title(parent, "Job Inspector", "Selected row details")
@@ -875,10 +918,6 @@ class MRQLauncher(tk.Tk):
 
         info_row = tk.Frame(parent, bg=UI_THEME["panel"])
         info_row.pack(fill=tk.X, pady=(12, 10))
-        self.current_task_var = StringVar(value="Current task: Idle")
-        self.current_status_var = StringVar(value="Status: Idle")
-        self.current_progress_var = StringVar(value="0%")
-        self.render_progress_value = tk.DoubleVar(value=0.0)
 
         left_info = tk.Frame(info_row, bg=UI_THEME["panel"])
         left_info.pack(side=tk.LEFT, fill=tk.X, expand=True)
@@ -896,8 +935,7 @@ class MRQLauncher(tk.Tk):
         )
         self.progress_bar.pack(side=tk.LEFT)
         tk.Label(progress_shell, textvariable=self.current_progress_var, bg=UI_THEME["panel"], fg=UI_THEME["text"], font=("Segoe UI", 9, "bold"), padx=10).pack(side=tk.LEFT)
-        self._session_total_label = tk.Label(progress_shell, text="Session total: 00:00:00", bg=UI_THEME["panel"], fg=UI_THEME["muted"], font=("Segoe UI", 10))
-        self._session_total_label.pack(side=tk.LEFT, padx=(6, 0))
+        tk.Label(progress_shell, textvariable=self.session_total_var, bg=UI_THEME["panel"], fg=UI_THEME["muted"], font=("Segoe UI", 10)).pack(side=tk.LEFT, padx=(6, 0))
 
         split = tk.PanedWindow(parent, orient=tk.HORIZONTAL, sashwidth=6, bg=UI_THEME["panel"], bd=0, relief=tk.FLAT)
         split.pack(fill=tk.BOTH, expand=True)
@@ -963,6 +1001,126 @@ class MRQLauncher(tk.Tk):
     def _on_tree_xview(self, *args):
         self.tree.xview(*args)
         self.after_idle(self._refresh_status_pills)
+
+    def _queue_tree_refresh(self):
+        self.after_idle(self._refresh_status_pills)
+        if self.minimal_mode:
+            self.after_idle(self._autosize_tree_columns)
+
+    def _tree_column_text(self, idx: int, column: str) -> str:
+        if not (0 <= idx < len(self.settings.tasks)):
+            return ""
+        task = self.settings.tasks[idx]
+        state = self.state[idx] if 0 <= idx < len(self.state) else default_task_state()
+        if column == "status":
+            return get_status_display(state.get("status", "Ready"), task.enabled)
+        if column == "level":
+            return soft_name(task.level)
+        if column == "sequence":
+            return soft_name(task.sequence)
+        if column == "preset":
+            return soft_name(task.preset)
+        if column == "runtime":
+            return format_runtime_display(state)
+        if column == "start":
+            return format_state_time_display(state.get("start"))
+        if column == "end":
+            return format_state_time_display(state.get("end"))
+        return ""
+
+    def _apply_default_tree_columns(self):
+        for name in self.tree_columns:
+            self.tree.column(name, width=self.tree_column_defaults[name], anchor="w", stretch=True)
+
+    def _autosize_tree_columns(self):
+        if not hasattr(self, "tree") or self.tree is None:
+            return
+        visible_items = [int(iid) for iid in self.tree.get_children()]
+        font = tkfont.nametofont("TkDefaultFont")
+        base_padding = self._s(28)
+        for name in self.tree_columns:
+            width = font.measure(self.tree_column_titles[name]) + base_padding
+            if name == "status":
+                width = max(width, self._s(110))
+            for idx in visible_items:
+                width = max(width, font.measure(self._tree_column_text(idx, name)) + base_padding)
+            if name == "status":
+                width = min(max(width, self._s(110)), self._s(150))
+            elif name == "level":
+                width = min(max(width, self._s(96)), self._s(160))
+            elif name == "sequence":
+                width = min(max(width, self._s(130)), self._s(260))
+            elif name == "preset":
+                width = min(max(width, self._s(150)), self._s(360))
+            else:
+                width = min(max(width, self._s(96)), self._s(132))
+            self.tree.column(name, width=width, anchor="w", stretch=False)
+
+    def _compute_minimal_geometry(self) -> str:
+        total_width = sum(int(float(self.tree.column(name, "width"))) for name in self.tree_columns)
+        total_width += self._s(72)
+        screen_width = max(self.winfo_screenwidth() - self._s(80), self.minimal_mode_minsize[0])
+        target_width = max(self.minimal_mode_minsize[0], min(total_width, screen_width))
+
+        visible_rows = max(8, min(len(self.tree.get_children()), 14))
+        row_height = self._s(30)
+        chrome_height = self._s(220)
+        screen_height = max(self.winfo_screenheight() - self._s(120), self.minimal_mode_minsize[1])
+        target_height = max(self.minimal_mode_minsize[1], min(chrome_height + visible_rows * row_height, screen_height))
+        return f"{target_width}x{target_height}"
+
+    def enter_minimal_mode(self):
+        if self.minimal_mode:
+            return
+        self.minimal_mode = True
+        self._full_mode_geometry = self.geometry()
+
+        self.header_panel.pack_forget()
+        self.bottom_panel.pack_forget()
+        self.status_bar.pack_forget()
+
+        self.queue_section_header.pack_forget()
+        self.queue_toolbar.pack_forget()
+        self.queue_stats_frame.pack_forget()
+        self.queue_hscroll.pack_forget()
+
+        self.minimal_header.pack(fill=tk.X, pady=(0, 10), before=self.tree_shell)
+        self.minimal_footer.pack(fill=tk.X, pady=(10, 0))
+
+        self.minsize(*self.minimal_mode_minsize)
+        self._autosize_tree_columns()
+        self.update_idletasks()
+        self.geometry(self._compute_minimal_geometry())
+        self._queue_tree_refresh()
+
+    def exit_minimal_mode(self):
+        if not self.minimal_mode:
+            return
+        self.minimal_mode = False
+
+        self.minimal_header.pack_forget()
+        self.minimal_footer.pack_forget()
+
+        self.header_panel.pack(fill=tk.X, padx=self._s(12), pady=(self._s(12), self._s(8)), before=self.body)
+        self.bottom_panel.pack(fill=tk.BOTH, expand=False, pady=(self._s(8), 0), after=self.upper_body)
+        self.status_bar.pack(fill=tk.X, padx=self._s(12), pady=(0, self._s(12)), after=self.body)
+
+        self.queue_section_header.pack(fill=tk.X, pady=(0, 10), before=self.tree_shell)
+        self.queue_toolbar.pack(fill=tk.X, pady=(0, 10), before=self.tree_shell)
+        self.queue_stats_frame.pack(fill=tk.X, pady=(0, 10), before=self.tree_shell)
+        self.queue_hscroll.pack(fill=tk.X, pady=(8, 0), after=self.tree_shell)
+
+        self.minsize(*self.full_mode_minsize)
+        self._apply_default_tree_columns()
+        if self._full_mode_geometry:
+            self.geometry(self._full_mode_geometry)
+        self._queue_tree_refresh()
+
+    def toggle_minimal_mode(self):
+        if self.minimal_mode:
+            self.exit_minimal_mode()
+        else:
+            self.enter_minimal_mode()
 
     def _round_rect(self, canvas: tk.Canvas, x1: int, y1: int, x2: int, y2: int, radius: int, **kwargs):
         radius = max(0, min(radius, int((x2 - x1) / 2), int((y2 - y1) / 2)))
@@ -1044,7 +1202,7 @@ class MRQLauncher(tk.Tk):
                 font=("Segoe UI", max(8, self._s(8)), "bold"),
             )
             pill.bind("<Button-1>", lambda e, item=iid: self._select_tree_item(item))
-            pill.bind("<Double-Button-1>", lambda e, item=iid: self._toggle_tree_item_enabled(item))
+            pill.bind("<Double-Button-1>", lambda e, item=iid: self._toggle_tree_item_ready_disabled(item))
             self.status_pill_widgets[iid] = pill
 
     def _select_tree_item(self, iid: str):
@@ -1056,14 +1214,13 @@ class MRQLauncher(tk.Tk):
         except Exception:
             pass
 
-    def _toggle_tree_item_enabled(self, iid: str):
+    def _toggle_tree_item_ready_disabled(self, iid: str):
         try:
-            self.tree.selection_set(iid)
-            self.tree.focus(iid)
-            self.tree.see(iid)
-            self._apply_enabled_state([int(iid)])
+            idx = int(iid)
         except Exception:
-            pass
+            return
+        self._select_tree_item(iid)
+        self._toggle_ready_disabled([idx])
 
     def _detect_ue_version(self) -> str:
         ue_path = self.var_ue.get().strip() if hasattr(self, "var_ue") else self.settings.ue_cmd
@@ -1142,6 +1299,8 @@ class MRQLauncher(tk.Tk):
     def _set_tree_item(self, idx: int):
         if self.tree.exists(str(idx)):
             self.tree.item(str(idx), values=self._row_values(idx), tags=(self._status_tag_for_index(idx),))
+            if self.minimal_mode:
+                self.after_idle(self._autosize_tree_columns)
             self.after_idle(self._refresh_status_pills)
 
     def _update_queue_stats(self):
@@ -1154,6 +1313,7 @@ class MRQLauncher(tk.Tk):
         self.queue_stats_var.set(f"Total: {total} | Visible: {visible} | Enabled: {enabled} | Selected: {selected}")
 
     def _on_runtime_options_changed(self, *_args):
+        self.settings.auto_minimal_on_render = bool(self.var_auto_minimal.get()) if hasattr(self, "var_auto_minimal") else self.settings.auto_minimal_on_render
         self._update_engine_labels()
         if self.command_preview is not None:
             self._update_command_preview()
@@ -1316,15 +1476,15 @@ class MRQLauncher(tk.Tk):
 
     def _row_values(self, i: int):
         t = self.settings.tasks[i]
-        state = self.state[i] if i < len(self.state) else default_task_state()
+        st = self.state[i] if i < len(self.state) else default_task_state()
         return (
             "",
             soft_name(t.level),
             soft_name(t.sequence),
             soft_name(t.preset),
-            format_running_time_display(state),
-            format_clock_display(state.get("start")),
-            format_clock_display(state.get("end")),
+            format_runtime_display(st),
+            format_state_time_display(st.get("start")),
+            format_state_time_display(st.get("end")),
         )
 
     def _set_status_async(self, idx: int, text: str):
@@ -1347,9 +1507,8 @@ class MRQLauncher(tk.Tk):
                 task.sequence,
                 task.preset,
                 task.output_dir,
-                task.added_at,
-                format_clock_display(self.state[i].get("start")) if i < len(self.state) else "",
-                format_clock_display(self.state[i].get("end")) if i < len(self.state) else "",
+                str(self.state[i].get("start", "")) if i < len(self.state) else "",
+                str(self.state[i].get("end", "")) if i < len(self.state) else "",
                 self.state[i].get("status", "Ready") if i < len(self.state) else "Ready",
             ]).lower()
             if query and query not in haystack:
@@ -1361,6 +1520,11 @@ class MRQLauncher(tk.Tk):
             self.tree.selection_set(visible_selection)
             self.tree.focus(visible_selection[0])
 
+        if self.minimal_mode:
+            self._autosize_tree_columns()
+        else:
+            self._apply_default_tree_columns()
+
         self.after_idle(self._refresh_status_pills)
         self._update_inspector()
         self._update_command_preview()
@@ -1369,51 +1533,19 @@ class MRQLauncher(tk.Tk):
     def _selected_indices(self) -> List[int]:
         return [int(iid) for iid in self.tree.selection()]
 
-    def _apply_enabled_state(self, indices: List[int], forced_value: Optional[bool] = None):
-        if not indices:
-            return
-        disabled_now = []
-        changed = False
-        for idx in indices:
-            if not (0 <= idx < len(self.settings.tasks)):
-                continue
-            current_status = self.state[idx].get("status", "Ready") if idx < len(self.state) else "Ready"
-            if current_status.startswith("Rendering"):
-                continue
-            task = self.settings.tasks[idx]
-            new_value = (not task.enabled) if forced_value is None else bool(forced_value)
-            if task.enabled == new_value and current_status == "Ready":
-                continue
-            task.enabled = new_value
-            if idx < len(self.state):
-                self.state[idx] = default_task_state()
-            changed = True
-            if not new_value:
-                disabled_now.append(task)
-        if disabled_now:
-            self._remove_tasks_from_runtime_queue(disabled_now)
-        if changed:
-            self.refresh_tree()
-
     def on_tree_dblclick(self, event):
-        indices = []
-        if event is not None:
-            iid = self.tree.identify_row(event.y)
-            if iid:
-                self.tree.selection_set(iid)
-                self.tree.focus(iid)
-                self.tree.see(iid)
-                indices = [int(iid)]
-        if not indices:
-            indices = self._selected_indices()
-        if not indices:
-            return "break"
-        self._apply_enabled_state(indices)
-        return "break"
+        iid = self.tree.identify_row(event.y)
+        if not iid:
+            return
+        column = self.tree.identify_column(event.x)
+        if column != "#1":
+            return
+        self._toggle_tree_item_ready_disabled(iid)
 
     def on_space_toggle(self, _):
-        self._apply_enabled_state(self._selected_indices())
-        return "break"
+        sel = self._selected_indices()
+        if sel:
+            self._toggle_ready_disabled(sel)
 
     # Order helpers
     def move_selected(self, delta: int):
@@ -1515,11 +1647,40 @@ class MRQLauncher(tk.Tk):
         self.refresh_tree()
         self._log(f"[Tasks] Removed {removed} unchecked task(s).")
 
+    def _toggle_ready_disabled(self, indices: List[int]):
+        if not indices:
+            return
+        disabled_now = []
+        for idx in indices:
+            if not (0 <= idx < len(self.settings.tasks)):
+                continue
+            current_status = self.state[idx].get("status", "Ready") if 0 <= idx < len(self.state) else "Ready"
+            if current_status.startswith("Rendering"):
+                continue
+            task = self.settings.tasks[idx]
+            task.enabled = not task.enabled
+            self.state[idx] = default_task_state()
+            if not task.enabled:
+                disabled_now.append(task)
+        if disabled_now:
+            self._remove_tasks_from_runtime_queue(disabled_now)
+        self.refresh_tree()
+
     def set_enabled_all(self, val: bool):
-        self._apply_enabled_state(list(range(len(self.settings.tasks))), forced_value=val)
+        for idx, t in enumerate(self.settings.tasks):
+            if self.state[idx].get("status", "Ready").startswith("Rendering"):
+                continue
+            t.enabled = val
+            self.state[idx] = default_task_state()
+        if not val:
+            self._remove_tasks_from_runtime_queue(self.settings.tasks)
+        self.refresh_tree()
 
     def toggle_selected(self):
-        self._apply_enabled_state(self._selected_indices())
+        sel = self._selected_indices()
+        if not sel:
+            return
+        self._toggle_ready_disabled(sel)
 
     # Save/Load JSON (queue)
     def load_from_json(self, path: str):
@@ -1535,6 +1696,7 @@ class MRQLauncher(tk.Tk):
         self.settings.resy = int(data.get("resy", self.settings.resy))
         self.settings.no_texture_streaming = bool(data.get("no_texture_streaming", self.settings.no_texture_streaming))
         self.settings.extra_cli = data.get("extra_cli", self.settings.extra_cli)
+        self.settings.auto_minimal_on_render = bool(data.get("auto_minimal_on_render", self.settings.auto_minimal_on_render))
 
         self.var_retries.set(self.settings.retries)
         self.var_policy.set(self.settings.fail_policy)
@@ -1543,6 +1705,7 @@ class MRQLauncher(tk.Tk):
         self.var_resx.set(self.settings.resx)
         self.var_resy.set(self.settings.resy)
         self.var_nts.set(self.settings.no_texture_streaming)
+        self.var_auto_minimal.set(self.settings.auto_minimal_on_render)
         self.var_extra.set(self.settings.extra_cli)
         self.settings.tasks = [
             RenderTask(**{
@@ -1568,6 +1731,7 @@ class MRQLauncher(tk.Tk):
             "resx": int(self.var_resx.get()),
             "resy": int(self.var_resy.get()),
             "no_texture_streaming": bool(self.var_nts.get()),
+            "auto_minimal_on_render": bool(self.var_auto_minimal.get()),
             "extra_cli": self.var_extra.get().strip(),
             "tasks": [asdict(t) for t in self.settings.tasks],
         }
@@ -1828,6 +1992,7 @@ class MRQLauncher(tk.Tk):
 
     def _run_queue(self, tasks: List[RenderTask]):
         ue_cmd = self.var_ue.get().strip()
+        self.settings.auto_minimal_on_render = bool(self.var_auto_minimal.get())
         if not ue_cmd or not os.path.exists(ue_cmd):
             messagebox.showerror("Error", "Specify a valid path to UnrealEditor-Cmd.exe")
             return
@@ -1840,6 +2005,8 @@ class MRQLauncher(tk.Tk):
         # Preload tasks into runtime queue via helper (sets statuses too)
         if tasks:
             self._enqueue_tasks(tasks, log_prefix="== Enqueued ")
+        if self.settings.auto_minimal_on_render and not self.minimal_mode:
+            self.after(0, self.enter_minimal_mode)
         retries = int(self.var_retries.get())
         policy = self.var_policy.get()
         kill_timeout = int(self.var_kill_timeout.get())
@@ -2225,11 +2392,12 @@ class MRQLauncher(tk.Tk):
     def _tick_session_total(self):
         """Update the fixed label with HH:MM:SS."""
         try:
-            if self._session_total_label is not None:
-                sec = self._compute_session_total_seconds()
-                h, rem = divmod(sec, 3600)
-                m, s = divmod(rem, 60)
-                self._session_total_label.config(text=f"Session total: {h:02d}:{m:02d}:{s:02d}")
+            sec = self._compute_session_total_seconds()
+            h, rem = divmod(sec, 3600)
+            m, s = divmod(rem, 60)
+            self.session_total_var.set(f"Session total: {h:02d}:{m:02d}:{s:02d}")
+            if self.minimal_mode and hasattr(self, "tree"):
+                self.after_idle(self._autosize_tree_columns)
         finally:
             # Re-schedule periodic update
             self.after(500, self._tick_session_total)
