@@ -7,7 +7,7 @@ import time
 import sys
 import shlex
 from dataclasses import dataclass, asdict, field
-from typing import List, Optional
+from typing import List, Optional, Any
 from datetime import datetime, timedelta
 
 import tkinter as tk
@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.7.1"
+APP_VERSION = "1.7.3"
 
 UI_THEME = {
     "bg": "#111318",
@@ -91,8 +91,47 @@ def soft_name(soft_path: str) -> str:
     return soft_path.split(".")[-1]
 
 
+class TaskRuntimeStatus:
+    """Canonical runtime status values shared by UI shells."""
+
+    READY = "Ready"
+    QUEUED = "Queued"
+    RENDERING = "Rendering"
+    DONE = "Done"
+    FAILED = "Failed"
+    CANCELLED = "Cancelled"
+    CANCELLED_QUEUE = "Cancelled (queue)"
+    SKIPPED_POLICY = "Skipped (policy)"
+
+
+class TaskRuntimeEventType:
+    """Canonical task/queue event names emitted by runtime services."""
+
+    TASK_QUEUED = "task_queued"
+    TASK_STARTED = "task_started"
+    PROGRESS_UPDATED = "progress_updated"
+    TASK_FINISHED = "task_finished"
+    TASK_FAILED = "task_failed"
+    TASK_CANCELLED = "task_cancelled"
+    QUEUE_CLEARED = "queue_cleared"
+    QUEUE_COMPLETED = "queue_completed"
+
+
+@dataclass
+class TaskRuntimeEvent:
+    """UI-agnostic runtime event consumed by the current Tk shell and future Qt shell."""
+
+    event_type: str
+    task_index: Optional[int] = None
+    status: Optional[str] = None
+    progress: Optional[int] = None
+    start: Optional[float] = None
+    end: Optional[float] = None
+    payload: Any = None
+
+
 def default_task_state() -> dict:
-    return {"status": "Ready", "progress": None, "start": None, "end": None}
+    return {"status": TaskRuntimeStatus.READY, "progress": None, "start": None, "end": None}
 
 
 def current_task_timestamp() -> str:
@@ -430,7 +469,7 @@ class RuntimeQueueCoordinator:
 
         return bool(count or skipped_duplicates or skipped_incomplete)
 
-    def clear_pending(self, status_text: str = "Cancelled (queue)") -> int:
+    def clear_pending(self, status_text: str = TaskRuntimeStatus.CANCELLED_QUEUE) -> int:
         removed = 0
         while True:
             try:
@@ -469,6 +508,49 @@ class RuntimeQueueCoordinator:
         if removed:
             self._log_callback(f"[Tasks] Removed {removed} queued item(s) from runtime queue.")
         return removed
+
+
+class RenderProcessController:
+    """Owns the active Unreal subprocess lifecycle independently from UI widgets."""
+
+    def __init__(self, log_callback):
+        self.current_process: Optional[subprocess.Popen] = None
+        self._log_callback = log_callback
+
+    def is_active(self) -> bool:
+        return bool(self.current_process and self.current_process.poll() is None)
+
+    def launch(self, cmd: List[str]) -> subprocess.Popen:
+        if self.is_active():
+            raise RuntimeError("A render process is already running.")
+        self.current_process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        return self.current_process
+
+    def clear_if_current(self, process: Optional[subprocess.Popen]) -> None:
+        if process is not None and self.current_process is process:
+            self.current_process = None
+
+    def stop_current(self, timeout_s: int) -> bool:
+        process = self.current_process
+        if not process or process.poll() is not None:
+            self._log_callback("[Cancel] No running process")
+            return False
+
+        process.terminate()
+        self._log_callback("[Cancel] Stop current render requested…")
+        if timeout_s > 0:
+            try:
+                process.wait(timeout=timeout_s)
+            except Exception:
+                process.kill()
+                self._log_callback("[Cancel] Kill current render after timeout")
+        return True
 
 
 # -------------------------------------------------
@@ -591,7 +673,7 @@ class MRQLauncher(tk.Tk):
         self.full_mode_minsize = (self._s(1280), self._s(760))
         self.minimal_mode_minsize = (self._s(560), self._s(360))
         self.settings = AppSettings()
-        self.current_process: Optional[subprocess.Popen] = None
+        self.process_controller = RenderProcessController(self._log)
         self._current_global_idx: Optional[int] = None
         self.stop_all = False
         self.cancel_current_requested = False
@@ -1761,7 +1843,7 @@ class MRQLauncher(tk.Tk):
         self.command_preview.config(state="disabled")
 
     def _is_render_active(self) -> bool:
-        return bool(self.worker_running or (self.current_process and self.current_process.poll() is None))
+        return bool(self.worker_running or self.process_controller.is_active())
 
     def _update_render_action_labels(self):
         active = self._is_render_active()
@@ -1872,11 +1954,67 @@ class MRQLauncher(tk.Tk):
             format_state_time_display(st.get("end")),
         )
 
+    def _emit_runtime_event(self, event: TaskRuntimeEvent):
+        self.ui_queue.put(event)
+
     def _set_status_async(self, idx: int, text: str):
-        self.ui_queue.put(("set_status", idx, text))
+        self._emit_runtime_event(TaskRuntimeEvent(
+            event_type=self._event_type_for_status(text),
+            task_index=idx,
+            status=text,
+        ))
+
+    def _set_progress_async(self, idx: int, progress: int):
+        self._emit_runtime_event(TaskRuntimeEvent(
+            event_type=TaskRuntimeEventType.PROGRESS_UPDATED,
+            task_index=idx,
+            progress=progress,
+        ))
 
     def _update_row_async(self, idx: int):
         self.ui_queue.put(("update_row", idx))
+
+    def _event_type_for_status(self, status: str) -> str:
+        status = status or TaskRuntimeStatus.READY
+        if status == TaskRuntimeStatus.QUEUED:
+            return TaskRuntimeEventType.TASK_QUEUED
+        if status.startswith(TaskRuntimeStatus.RENDERING):
+            return TaskRuntimeEventType.TASK_STARTED
+        if status.startswith(TaskRuntimeStatus.DONE):
+            return TaskRuntimeEventType.TASK_FINISHED
+        if status.startswith(TaskRuntimeStatus.FAILED):
+            return TaskRuntimeEventType.TASK_FAILED
+        if status.startswith(TaskRuntimeStatus.CANCELLED):
+            return TaskRuntimeEventType.TASK_CANCELLED
+        if status.startswith(TaskRuntimeStatus.SKIPPED_POLICY):
+            return "task_skipped"
+        return "task_status_changed"
+
+    def _apply_runtime_event(self, event: TaskRuntimeEvent) -> bool:
+        idx = event.task_index
+        if idx is None or not (0 <= idx < len(self.state)):
+            return False
+
+        if event.start is not None:
+            self.state[idx]["start"] = event.start
+        if event.end is not None:
+            self.state[idx]["end"] = event.end
+        if event.status is not None:
+            self.state[idx]["status"] = event.status
+            if event.status.startswith(TaskRuntimeStatus.DONE):
+                self.state[idx]["progress"] = 100
+            elif event.status in (
+                TaskRuntimeStatus.QUEUED,
+                TaskRuntimeStatus.READY,
+                TaskRuntimeStatus.CANCELLED,
+                TaskRuntimeStatus.CANCELLED_QUEUE,
+            ):
+                self.state[idx]["progress"] = 0
+        if event.progress is not None:
+            self.state[idx]["progress"] = event.progress
+
+        self._set_tree_item(idx)
+        return True
 
     # Tree helpers
     def refresh_tree(self):
@@ -2234,7 +2372,7 @@ class MRQLauncher(tk.Tk):
     def run_all(self):
         tasks = self._collect()
         # If already running, just enqueue
-        if self.worker_running or (self.current_process and self.current_process.poll() is None):
+        if self.worker_running or self.process_controller.is_active():
             self._enqueue_tasks(tasks)
             return
         self._run_queue(tasks)
@@ -2244,7 +2382,7 @@ class MRQLauncher(tk.Tk):
         if not tasks:
             messagebox.showinfo("Info", "Select at least one task in the table.")
             return
-        if self.worker_running or (self.current_process and self.current_process.poll() is None):
+        if self.worker_running or self.process_controller.is_active():
             # Prevent spawning another render process; enqueue instead
             self._enqueue_tasks(tasks)
             return
@@ -2255,7 +2393,7 @@ class MRQLauncher(tk.Tk):
         if not tasks:
             messagebox.showinfo("Info", "No enabled tasks to run.")
             return
-        if self.worker_running or (self.current_process and self.current_process.poll() is None):
+        if self.worker_running or self.process_controller.is_active():
             self._enqueue_tasks(tasks)
             return
         self._run_queue(tasks)
@@ -2462,9 +2600,7 @@ class MRQLauncher(tk.Tk):
                         log_fp = open(logfile, "a", encoding="utf-8")
                         log_fp.write(f"CMD: {' '.join(cmd)}\n")
                         log_fp.write(f"START: {start_dt.strftime('%Y-%m-%d %H:%M:%S')}\n")
-                        self.current_process = subprocess.Popen(
-                            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
-                        )
+                        active_process = self.process_controller.launch(cmd)
                     except Exception as e:
                         self._log(f"[{idx}] Failed to start: {e}")
                         break
@@ -2495,7 +2631,7 @@ class MRQLauncher(tk.Tk):
                                     log_fp.write(line)
                                     progress = self._extract_progress(line)
                                     if progress is not None and gidx is not None:
-                                        self.ui_queue.put(("set_progress", gidx, progress))
+                                        self._set_progress_async(gidx, progress)
                         except Exception as ex:
                             self._log(f"[pump] {ex}")
                         finally:
@@ -2504,19 +2640,19 @@ class MRQLauncher(tk.Tk):
                             except Exception:
                                 pass
 
-                    th_pump = threading.Thread(target=pump, args=(self.current_process, gi), daemon=True)
+                    th_pump = threading.Thread(target=pump, args=(active_process, gi), daemon=True)
                     th_pump.start()
                     # Pass the concrete process handle to the ticker
-                    th_tick = threading.Thread(target=tick_elapsed, args=(gi, self.current_process), daemon=True)
+                    th_tick = threading.Thread(target=tick_elapsed, args=(gi, active_process), daemon=True)
                     th_tick.start()
-                    rc = self.current_process.wait()
+                    rc = active_process.wait()
                     self._log(f"[{idx}] Exit code: {rc}")
                     # Stop ticker ASAP for this process
                     try:
                         th_tick.join(timeout=0.2)
                     except Exception:
                         pass
-                    self.current_process = None
+                    self.process_controller.clear_if_current(active_process)
                     try:
                         end_dt = datetime.now()
                         log_fp.write(f"END: {end_dt.strftime('%Y-%m-%d %H:%M:%S')}\n")
@@ -2582,7 +2718,8 @@ class MRQLauncher(tk.Tk):
                     break
 
             if self.stop_all:
-                self._clear_pending_runtime_queue("Cancelled (queue)")
+                self._clear_pending_runtime_queue(TaskRuntimeStatus.CANCELLED_QUEUE)
+            self._emit_runtime_event(TaskRuntimeEvent(event_type=TaskRuntimeEventType.QUEUE_COMPLETED))
             self._log("== Queue complete ==")
             self._current_global_idx = None
             self.worker_running = False
@@ -2592,18 +2729,10 @@ class MRQLauncher(tk.Tk):
             threading.Thread(target=worker, daemon=True).start()
 
     def cancel_current(self):
-        if self.current_process and self.current_process.poll() is None:
+        if self.process_controller.is_active():
+            self.cancel_current_requested = True
             try:
-                self.cancel_current_requested = True
-                self.current_process.terminate()
-                self._log("[Cancel] Stop current render requested…")
-                timeout = int(self.var_kill_timeout.get())
-                if timeout > 0:
-                    try:
-                        self.current_process.wait(timeout=timeout)
-                    except Exception:
-                        self.current_process.kill()
-                        self._log("[Cancel] Kill current render after timeout")
+                self.process_controller.stop_current(int(self.var_kill_timeout.get()))
             except Exception as e:
                 self.cancel_current_requested = False
                 self._log(f"[Cancel] Error: {e}")
@@ -2612,7 +2741,7 @@ class MRQLauncher(tk.Tk):
     def cancel_all(self):
         self.stop_all = True
         self.cancel_current()
-        self._clear_pending_runtime_queue("Cancelled (queue)")
+        self._clear_pending_runtime_queue(TaskRuntimeStatus.CANCELLED_QUEUE)
         self._log("[Cancel] Stop-all requested.")
 
     def _current_running_task_for_queue(self) -> Optional[RenderTask]:
@@ -2629,9 +2758,14 @@ class MRQLauncher(tk.Tk):
         if changed:
             self.refresh_tree()
 
-    def _clear_pending_runtime_queue(self, status_text: str = "Cancelled (queue)"):
+    def _clear_pending_runtime_queue(self, status_text: str = TaskRuntimeStatus.CANCELLED_QUEUE):
         """Remove waiting tasks through the runtime queue coordinator."""
-        self.runtime_queue.clear_pending(status_text)
+        removed = self.runtime_queue.clear_pending(status_text)
+        if removed:
+            self._emit_runtime_event(TaskRuntimeEvent(
+                event_type=TaskRuntimeEventType.QUEUE_CLEARED,
+                payload={"removed": removed},
+            ))
 
     def _remove_tasks_from_runtime_queue(self, tasks_to_remove: List[RenderTask]):
         """Remove specific pending task objects through the runtime queue coordinator."""
@@ -2673,26 +2807,15 @@ class MRQLauncher(tk.Tk):
                 item = self.ui_queue.get_nowait()
                 if not item:
                     break
+                if isinstance(item, TaskRuntimeEvent):
+                    status_changed = self._apply_runtime_event(item) or status_changed
+                    continue
+
                 kind = item[0]
-                if kind == "set_status":
-                    _, idx, text = item
-                    if 0 <= idx < len(self.state):
-                        self.state[idx]["status"] = text
-                        if text.startswith("Done"):
-                            self.state[idx]["progress"] = 100
-                        elif text in ("Queued", "Ready", "Cancelled", "Cancelled (queue)"):
-                            self.state[idx]["progress"] = 0
-                        self._set_tree_item(idx)
-                        status_changed = True
-                elif kind == "update_row":
+                if kind == "update_row":
                     _, idx = item
                     self._set_tree_item(idx)
                     status_changed = True
-                elif kind == "set_progress":
-                    _, idx, progress = item
-                    if 0 <= idx < len(self.state):
-                        self.state[idx]["progress"] = progress
-                        status_changed = True
         except queue.Empty:
             pass
 
@@ -2724,7 +2847,7 @@ class MRQLauncher(tk.Tk):
         gi = self._current_global_idx
         if gi is not None and 0 <= gi < len(self.state):
             st = self.state[gi]
-            if st.get("start") and self.current_process and self.current_process.poll() is None:
+            if st.get("start") and self.process_controller.is_active():
                 total += max(0, int(time.time() - st["start"]))
         return total
 
