@@ -17,7 +17,7 @@ from tkinter import ttk
 # -------------------------------------------------
 # App meta
 # -------------------------------------------------
-APP_VERSION = "1.4.1"
+APP_VERSION = "1.4.2"
 # -------------------------------------------------
 # Helpers
 # -------------------------------------------------
@@ -880,6 +880,7 @@ class MRQLauncher(tk.Tk):
         def worker():
             self.worker_running = True
             idx = 0
+            skip_next_pending = 0
             while True:
                 if self.stop_all and self.runtime_q.empty():
                     break
@@ -893,14 +894,21 @@ class MRQLauncher(tk.Tk):
                 if not all([t.uproject, t.level, t.sequence, t.preset]):
                     self._log(f"[{idx}] Skipped: task is incomplete")
                     continue
-
-                attempt = 0
-                logfile = self._task_logfile(t)
                 gi = None
                 try:
                     gi = self.settings.tasks.index(t)
                 except ValueError:
                     gi = None
+
+                if skip_next_pending > 0:
+                    skip_next_pending -= 1
+                    if gi is not None:
+                        self._set_status_async(gi, "Skipped (policy)")
+                    self._log(f"[{idx}] Skipped by fail policy (skip_next)")
+                    continue
+
+                attempt = 0
+                logfile = self._task_logfile(t)
 
                 while attempt <= retries and not self.stop_all:
                     attempt += 1
@@ -1041,7 +1049,10 @@ class MRQLauncher(tk.Tk):
                             if gi is not None:
                                 self._set_status_async(gi, f"Failed (rc={rc})")
                             self._log(f"[{idx}] Failed after {retries+1} attempt(s)")
-                        if policy == "skip_next":
+                            if policy == "skip_next":
+                                skip_next_pending = 1
+                                self._log(f"[{idx}] Policy skip_next: next task will be skipped")
+                        if attempt > retries:
                             break
 
                 if self.stop_all:
