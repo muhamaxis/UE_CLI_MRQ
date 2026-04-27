@@ -98,6 +98,16 @@ def current_task_timestamp() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
+def format_state_time_display(value: Optional[float]) -> str:
+    if not value:
+        return "—"
+    try:
+        dt = datetime.fromtimestamp(float(value))
+    except Exception:
+        return "—"
+    return dt.strftime("%H:%M:%S")
+
+
 def format_added_display(value: str) -> str:
     if not value:
         return "—"
@@ -117,40 +127,12 @@ def format_added_display(value: str) -> str:
     return dt.strftime("%Y-%m-%d %H:%M")
 
 
-def format_duration_compact(seconds: Optional[int]) -> str:
-    if seconds is None:
-        return ""
-    seconds = max(0, int(seconds))
-    hours, rem = divmod(seconds, 3600)
-    minutes, secs = divmod(rem, 60)
-    if hours > 0:
-        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
-    return f"{minutes:02d}:{secs:02d}"
-
-
-def format_runtime_display(state: dict) -> str:
-    start = state.get("start")
-    end = state.get("end")
-    status = (state.get("status") or "").strip()
-
-    if start and end:
-        return format_duration_compact(int(end - start))
-
-    if start and status.startswith("Rendering"):
-        return format_duration_compact(int(time.time() - start))
-
-    if start and status.startswith("Failed"):
-        return format_duration_compact(int(time.time() - start))
-
-    return ""
-
-
 def get_status_display(status: str, enabled: bool) -> str:
     if not enabled:
         return "Disabled"
     status = (status or "Ready").strip()
     if status.startswith("Cancelled"):
-        return "Cancelled"
+        return "Failed"
     if status.startswith("Failed"):
         return "Failed"
     if status.startswith("Done"):
@@ -162,7 +144,6 @@ def get_status_display(status: str, enabled: bool) -> str:
     if status == "Queued":
         return "Queued"
     return "Ready"
-
 
 def get_status_kind(status: str, enabled: bool) -> str:
     if not enabled:
@@ -729,22 +710,22 @@ class MRQLauncher(tk.Tk):
         tree_shell = tk.Frame(parent, bg=UI_THEME["panel"])
         tree_shell.pack(fill=tk.BOTH, expand=True)
 
-        cols = ("status", "level", "sequence", "preset", "runtime", "added")
+        cols = ("status", "level", "sequence", "preset", "start", "end")
         self.tree = ttk.Treeview(tree_shell, columns=cols, show="headings", selectmode="extended")
         for name, title, width, anchor in (
-            ("status", "Status", self._s(170), "w"),
+            ("status", "Status", self._s(180), "w"),
             ("level", "Level", self._s(150), "w"),
             ("sequence", "Sequence", self._s(220), "w"),
             ("preset", "Preset", self._s(320), "w"),
-            ("runtime", "Running Time", self._s(120), "center"),
-            ("added", "Added", self._s(150), "w"),
+            ("start", "Start", self._s(120), "w"),
+            ("end", "End", self._s(120), "w"),
         ):
             self.tree.heading(name, text=title)
             self.tree.column(name, width=width, anchor=anchor, stretch=True)
 
         self.tree.tag_configure("status_ready", foreground=UI_THEME["text"])
         self.tree.tag_configure("status_queued", foreground="#FFD28A")
-        self.tree.tag_configure("status_rendering", foreground="#F0A54A", font=("Segoe UI", 9, "bold"))
+        self.tree.tag_configure("status_rendering", foreground="#F0B35A", font=("Segoe UI", 9, "bold"))
         self.tree.tag_configure("status_done", foreground="#8BE2B5")
         self.tree.tag_configure("status_failed", foreground="#FF9AA9")
         self.tree.tag_configure("status_disabled", foreground=UI_THEME["muted"])
@@ -1034,7 +1015,7 @@ class MRQLauncher(tk.Tk):
                 font=("Segoe UI", max(8, self._s(8)), "bold"),
             )
             pill.bind("<Button-1>", lambda e, item=iid: self._select_tree_item(item))
-            pill.bind("<Double-Button-1>", lambda e, item=iid: self._toggle_tree_item_enabled(item))
+            pill.bind("<Double-Button-1>", lambda e, item=iid: self._toggle_tree_item_ready_disabled(item))
             self.status_pill_widgets[iid] = pill
 
     def _select_tree_item(self, iid: str):
@@ -1046,14 +1027,13 @@ class MRQLauncher(tk.Tk):
         except Exception:
             pass
 
-    def _toggle_tree_item_enabled(self, iid: str):
+    def _toggle_tree_item_ready_disabled(self, iid: str):
         try:
-            self.tree.selection_set(iid)
-            self.tree.focus(iid)
-            self.tree.see(iid)
-            self._apply_enabled_state([int(iid)])
+            idx = int(iid)
         except Exception:
-            pass
+            return
+        self._select_tree_item(iid)
+        self._toggle_ready_disabled([idx])
 
     def _detect_ue_version(self) -> str:
         ue_path = self.var_ue.get().strip() if hasattr(self, "var_ue") else self.settings.ue_cmd
@@ -1306,14 +1286,14 @@ class MRQLauncher(tk.Tk):
 
     def _row_values(self, i: int):
         t = self.settings.tasks[i]
-        state = self.state[i] if i < len(self.state) else default_task_state()
+        st = self.state[i] if i < len(self.state) else default_task_state()
         return (
             "",
             soft_name(t.level),
             soft_name(t.sequence),
             soft_name(t.preset),
-            format_runtime_display(state),
-            format_added_display(t.added_at),
+            format_state_time_display(st.get("start")),
+            format_state_time_display(st.get("end")),
         )
 
     def _set_status_async(self, idx: int, text: str):
@@ -1336,7 +1316,8 @@ class MRQLauncher(tk.Tk):
                 task.sequence,
                 task.preset,
                 task.output_dir,
-                task.added_at,
+                str(self.state[i].get("start", "")) if i < len(self.state) else "",
+                str(self.state[i].get("end", "")) if i < len(self.state) else "",
                 self.state[i].get("status", "Ready") if i < len(self.state) else "Ready",
             ]).lower()
             if query and query not in haystack:
@@ -1356,34 +1337,19 @@ class MRQLauncher(tk.Tk):
     def _selected_indices(self) -> List[int]:
         return [int(iid) for iid in self.tree.selection()]
 
-    def _apply_enabled_state(self, indices: List[int], forced_value: Optional[bool] = None):
-        if not indices:
+    def on_tree_dblclick(self, event):
+        iid = self.tree.identify_row(event.y)
+        if not iid:
             return
-        disabled_now = []
-        for idx in indices:
-            if not (0 <= idx < len(self.settings.tasks)):
-                continue
-            task = self.settings.tasks[idx]
-            new_value = (not task.enabled) if forced_value is None else forced_value
-            if task.enabled == new_value:
-                continue
-            task.enabled = new_value
-            if 0 <= idx < len(self.state):
-                self.state[idx] = default_task_state()
-            if not new_value:
-                disabled_now.append(task)
-        if disabled_now:
-            self._remove_tasks_from_runtime_queue(disabled_now)
-        self.refresh_tree()
-
-    def on_tree_dblclick(self, _):
-        sel = self._selected_indices()
-        if not sel:
+        column = self.tree.identify_column(event.x)
+        if column != "#1":
             return
-        self._apply_enabled_state(sel)
+        self._toggle_tree_item_ready_disabled(iid)
 
     def on_space_toggle(self, _):
-        self.on_tree_dblclick(_)
+        sel = self._selected_indices()
+        if sel:
+            self._toggle_ready_disabled(sel)
 
     # Order helpers
     def move_selected(self, delta: int):
@@ -1485,14 +1451,40 @@ class MRQLauncher(tk.Tk):
         self.refresh_tree()
         self._log(f"[Tasks] Removed {removed} unchecked task(s).")
 
+    def _toggle_ready_disabled(self, indices: List[int]):
+        if not indices:
+            return
+        disabled_now = []
+        for idx in indices:
+            if not (0 <= idx < len(self.settings.tasks)):
+                continue
+            current_status = self.state[idx].get("status", "Ready") if 0 <= idx < len(self.state) else "Ready"
+            if current_status.startswith("Rendering"):
+                continue
+            task = self.settings.tasks[idx]
+            task.enabled = not task.enabled
+            self.state[idx] = default_task_state()
+            if not task.enabled:
+                disabled_now.append(task)
+        if disabled_now:
+            self._remove_tasks_from_runtime_queue(disabled_now)
+        self.refresh_tree()
+
     def set_enabled_all(self, val: bool):
-        self._apply_enabled_state(list(range(len(self.settings.tasks))), forced_value=val)
+        for idx, t in enumerate(self.settings.tasks):
+            if self.state[idx].get("status", "Ready").startswith("Rendering"):
+                continue
+            t.enabled = val
+            self.state[idx] = default_task_state()
+        if not val:
+            self._remove_tasks_from_runtime_queue(self.settings.tasks)
+        self.refresh_tree()
 
     def toggle_selected(self):
         sel = self._selected_indices()
         if not sel:
             return
-        self._apply_enabled_state(sel)
+        self._toggle_ready_disabled(sel)
 
     # Save/Load JSON (queue)
     def load_from_json(self, path: str):
@@ -2167,7 +2159,6 @@ class MRQLauncher(tk.Tk):
             self._update_inspector()
             self._update_command_preview()
             self._update_status_summary()
-            self.after_idle(self._refresh_status_pills)
 
         self.after(50, self._drain_queues)
 
