@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.6.6"
+APP_VERSION = "1.6.7"
 
 UI_THEME = {
     "bg": "#111318",
@@ -394,6 +394,8 @@ class MRQLauncher(tk.Tk):
         # --- New: shared runtime task queue and worker flag
         self.runtime_q: "queue.Queue[RenderTask]" = queue.Queue()
         self.worker_running: bool = False
+        self.render_action_buttons = []
+        self.render_mode_hint_var = StringVar(value="Ready to render.")
         self.command_preview: Optional[tk.Text] = None
         self.inspector_vars = {}
         self.status_pill_widgets = {}
@@ -747,6 +749,10 @@ class MRQLauncher(tk.Tk):
         self.queue_toolbar = tk.Frame(parent, bg=UI_THEME["panel"])
         self.queue_toolbar.pack(fill=tk.X, pady=(0, 10))
 
+        self.queue_hint_frame = tk.Frame(parent, bg=UI_THEME["panel"])
+        self.queue_hint_frame.pack(fill=tk.X, pady=(0, 10))
+        tk.Label(self.queue_hint_frame, textvariable=self.render_mode_hint_var, bg=UI_THEME["panel"], fg=UI_THEME["muted"], font=("Segoe UI", 9, "italic")).pack(anchor="w")
+
         left = tk.Frame(self.queue_toolbar, bg=UI_THEME["panel"])
         left.pack(side=tk.LEFT)
         self._make_button(left, "Add Job", self.add_task).pack(side=tk.LEFT, padx=(0, 6))
@@ -908,12 +914,17 @@ class MRQLauncher(tk.Tk):
 
         controls = tk.Frame(top, bg=UI_THEME["panel"])
         controls.pack(side=tk.LEFT)
-        self._make_button(controls, "Render Enabled", self.run_enabled, variant="primary").pack(side=tk.LEFT, padx=(0, 6))
-        self._make_button(controls, "Render Selected", self.run_selected).pack(side=tk.LEFT, padx=(0, 6))
-        self._make_button(controls, "Queue Selected", self.enqueue_selected_or_enabled).pack(side=tk.LEFT, padx=(0, 6))
-        self._make_button(controls, "Render All", self.run_all).pack(side=tk.LEFT, padx=(0, 6))
+        self.btn_render_enabled = self._make_button(controls, "Render Enabled", self.run_enabled, variant="primary")
+        self.btn_render_enabled.pack(side=tk.LEFT, padx=(0, 6))
+        self.btn_render_selected = self._make_button(controls, "Render Selected", self.run_selected)
+        self.btn_render_selected.pack(side=tk.LEFT, padx=(0, 6))
+        self.btn_queue_selected = self._make_button(controls, "Queue Selected", self.enqueue_selected_or_enabled)
+        self.btn_queue_selected.pack(side=tk.LEFT, padx=(0, 6))
+        self.btn_render_all = self._make_button(controls, "Render All", self.run_all)
+        self.btn_render_all.pack(side=tk.LEFT, padx=(0, 6))
         self._make_button(controls, "Clear Status", self.clear_status_selected).pack(side=tk.LEFT, padx=(0, 6))
         self._make_button(controls, "Stop All", self.cancel_all, variant="danger").pack(side=tk.LEFT)
+        self.render_action_buttons = [self.btn_render_enabled, self.btn_render_selected, self.btn_render_all]
 
         logs_actions = tk.Frame(top, bg=UI_THEME["panel"])
         logs_actions.pack(side=tk.RIGHT)
@@ -1452,6 +1463,26 @@ class MRQLauncher(tk.Tk):
         self.command_preview.insert("1.0", content)
         self.command_preview.config(state="disabled")
 
+    def _is_render_active(self) -> bool:
+        return bool(self.worker_running or (self.current_process and self.current_process.poll() is None))
+
+    def _update_render_action_labels(self):
+        active = self._is_render_active()
+        if hasattr(self, "btn_render_enabled"):
+            self.btn_render_enabled.config(text="Add Enabled to Queue" if active else "Render Enabled")
+        if hasattr(self, "btn_render_selected"):
+            self.btn_render_selected.config(text="Add Selected to Queue" if active else "Render Selected")
+        if hasattr(self, "btn_render_all"):
+            self.btn_render_all.config(text="Add All to Queue" if active else "Render All")
+        if hasattr(self, "btn_queue_selected"):
+            self.btn_queue_selected.config(text="Queue Selected")
+        if hasattr(self, "render_mode_hint_var"):
+            self.render_mode_hint_var.set(
+                "Render in progress. New tasks will be appended to queue."
+                if active
+                else "Ready to render."
+            )
+
     def _update_status_summary(self):
         statuses = [s.get("status", "Ready") for s in self.state]
         queued = sum(1 for s in statuses if s == "Queued")
@@ -1459,8 +1490,9 @@ class MRQLauncher(tk.Tk):
         failed = sum(1 for s in statuses if s.startswith("Failed") or s.startswith("Cancelled"))
         done = sum(1 for s in statuses if s.startswith("Done"))
 
-        overall = "Running" if self.worker_running or (self.current_process and self.current_process.poll() is None) else "Idle"
+        overall = "Running" if self._is_render_active() else "Idle"
         self.status_overall_var.set(f"State: {overall}")
+        self._update_render_action_labels()
         self.status_counts_var.set(f"Queued: {queued} | Running: {running} | Failed: {failed} | Done: {done}")
 
         task_idx = None
@@ -2291,16 +2323,45 @@ class MRQLauncher(tk.Tk):
         self._clear_pending_runtime_queue("Cancelled (queue)")
         self._log("[Cancel] Stop-all requested.")
 
+    def _task_identity_set_from_runtime_queue(self) -> set:
+        queued_ids = set()
+        running_task = None
+        if self._current_global_idx is not None and 0 <= self._current_global_idx < len(self.settings.tasks):
+            running_task = self.settings.tasks[self._current_global_idx]
+        if running_task is not None:
+            queued_ids.add(id(running_task))
+
+        kept = []
+        while True:
+            try:
+                task = self.runtime_q.get_nowait()
+            except queue.Empty:
+                break
+            kept.append(task)
+            queued_ids.add(id(task))
+
+        for task in kept:
+            self.runtime_q.put(task)
+        return queued_ids
+
     def _enqueue_tasks(self, tasks: List[RenderTask], mark_queued: bool = True, log_prefix: str = "[+] Added "):
         """Enqueue a list of tasks into the runtime queue and optionally mark them as Queued."""
         if not tasks:
             return
+        queued_ids = self._task_identity_set_from_runtime_queue()
         count = 0
+        skipped_duplicates = 0
+        skipped_incomplete = 0
         for t in tasks:
             # Skip incomplete tasks defensively
             if not all([t.uproject, t.level, t.sequence, t.preset]):
+                skipped_incomplete += 1
+                continue
+            if id(t) in queued_ids:
+                skipped_duplicates += 1
                 continue
             self.runtime_q.put(t)
+            queued_ids.add(id(t))
             if mark_queued:
                 gi = self._find_task_index_by_identity(t)
                 if gi is not None:
@@ -2308,6 +2369,11 @@ class MRQLauncher(tk.Tk):
             count += 1
         if count:
             self._log(f"{log_prefix}{count} task(s) to queue")
+        if skipped_duplicates:
+            self._log(f"[Queue] Skipped {skipped_duplicates} task(s): already queued or rendering.")
+        if skipped_incomplete:
+            self._log(f"[Queue] Skipped {skipped_incomplete} incomplete task(s).")
+        if count or skipped_duplicates or skipped_incomplete:
             # Ensure table reflects status changes
             self.refresh_tree()
 
