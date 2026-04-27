@@ -558,6 +558,7 @@ class MRQLauncher(tk.Tk):
     def remove_unchecked_tasks(self):
         """Remove all tasks that are not checked (enabled == False)."""
         removed = 0
+        removed_tasks = []
         new_tasks = []
         new_state = []
         for i, t in enumerate(self.settings.tasks):
@@ -566,7 +567,11 @@ class MRQLauncher(tk.Tk):
                 if i < len(self.state):
                     new_state.append(self.state[i])
             else:
+                removed_tasks.append(t)
                 removed += 1
+        # Also purge queued runtime entries for tasks that are being removed.
+        # Otherwise disabled+removed tasks can still render later from runtime_q.
+        self._remove_tasks_from_runtime_queue(removed_tasks)
         self.settings.tasks = new_tasks
         self.state = new_state
         self.refresh_tree()
