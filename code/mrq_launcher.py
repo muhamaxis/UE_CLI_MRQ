@@ -17,7 +17,24 @@ from tkinter import ttk
 # -------------------------------------------------
 # App meta
 # -------------------------------------------------
-APP_VERSION = "1.4.6"
+
+APP_VERSION = "1.5.0"
+
+UI_THEME = {
+    "bg": "#111318",
+    "panel": "#171B22",
+    "panel_alt": "#1D232C",
+    "panel_soft": "#202733",
+    "border": "#2A3340",
+    "text": "#E7ECF3",
+    "muted": "#9CA8B7",
+    "accent": "#4EA1FF",
+    "accent_soft": "#223A56",
+    "success": "#2D6A4F",
+    "warning": "#8A6A2F",
+    "danger": "#8B3A46",
+    "entry": "#10141A",
+}
 # -------------------------------------------------
 # Helpers
 # -------------------------------------------------
@@ -62,6 +79,10 @@ def soft_name(soft_path: str) -> str:
         return "?"
     return soft_path.split(".")[-1]
 
+
+def default_task_state() -> dict:
+    return {"status": "Ready", "progress": None, "start": None, "end": None}
+
 # -------------------------------------------------
 # Data
 # -------------------------------------------------
@@ -101,6 +122,7 @@ class TaskEditor(tk.Toplevel):
         # Allow resizing of the task editor window
         self.resizable(True, True)
         self.result: Optional[RenderTask] = None
+        self.configure(bg=UI_THEME["panel"])
 
         self.var_uproj = StringVar(value=(task.uproject if task else ""))
         self.var_level = StringVar(value=(task.level if task else ""))
@@ -109,19 +131,19 @@ class TaskEditor(tk.Toplevel):
         self.var_output_dir = StringVar(value=(task.output_dir if task else ""))
         self.var_notes = StringVar(value=(task.notes if task else ""))
 
-        frm = tk.Frame(self, padx=10, pady=10)
+        frm = tk.Frame(self, padx=10, pady=10, bg=UI_THEME["panel"])
         frm.pack(fill=tk.BOTH, expand=True)
 
         def row(lbl, var, browse_cb=None, hint: str = ""):
             # Generic row builder for labeled entry with optional Browse and hint
-            r = tk.Frame(frm)
+            r = tk.Frame(frm, bg=UI_THEME["panel"])
             r.pack(fill="x", pady=3)
-            tk.Label(r, text=lbl, width=20, anchor="w").pack(side=tk.LEFT)
-            tk.Entry(r, textvariable=var, width=70).pack(side=tk.LEFT, padx=5)
+            tk.Label(r, text=lbl, width=20, anchor="w", bg=UI_THEME["panel"], fg=UI_THEME["text"]).pack(side=tk.LEFT)
+            tk.Entry(r, textvariable=var, width=70, bg=UI_THEME["entry"], fg=UI_THEME["text"], insertbackground=UI_THEME["text"], relief=tk.FLAT, bd=0, highlightthickness=1, highlightbackground=UI_THEME["border"], highlightcolor=UI_THEME["accent"]).pack(side=tk.LEFT, padx=5)
             if browse_cb:
-                tk.Button(r, text="Browse", command=browse_cb).pack(side=tk.LEFT)
+                tk.Button(r, text="Browse", command=browse_cb, bg=UI_THEME["panel_soft"], fg=UI_THEME["text"], activebackground=UI_THEME["panel_soft"], activeforeground=UI_THEME["text"], relief=tk.FLAT, bd=0, padx=10, pady=4).pack(side=tk.LEFT)
             if hint:
-                tk.Label(frm, text=hint, fg="gray").pack(anchor="w")
+                tk.Label(frm, text=hint, fg=UI_THEME["muted"], bg=UI_THEME["panel"]).pack(anchor="w")
 
         def pick_uproj():
             p = filedialog.askopenfilename(title="Select .uproject", filetypes=[("Unreal Project", "*.uproject")])
@@ -169,13 +191,13 @@ class TaskEditor(tk.Toplevel):
             "Optional. If empty, the path from MRQ Preset will be used."
         )
 
-        tk.Label(frm, text="Notes").pack(anchor="w")
-        tk.Entry(frm, textvariable=self.var_notes, width=95).pack(fill="x")
+        tk.Label(frm, text="Notes", bg=UI_THEME["panel"], fg=UI_THEME["text"]).pack(anchor="w")
+        tk.Entry(frm, textvariable=self.var_notes, width=95, bg=UI_THEME["entry"], fg=UI_THEME["text"], insertbackground=UI_THEME["text"], relief=tk.FLAT, bd=0, highlightthickness=1, highlightbackground=UI_THEME["border"], highlightcolor=UI_THEME["accent"]).pack(fill="x")
 
-        btn = tk.Frame(frm)
+        btn = tk.Frame(frm, bg=UI_THEME["panel"])
         btn.pack(fill="x", pady=10)
-        tk.Button(btn, text="OK", command=self.on_ok).pack(side=tk.LEFT, padx=4)
-        tk.Button(btn, text="Cancel", command=self.destroy).pack(side=tk.LEFT)
+        tk.Button(btn, text="OK", command=self.on_ok, bg=UI_THEME["accent"], fg="#FFFFFF", activebackground=UI_THEME["accent"], activeforeground="#FFFFFF", relief=tk.FLAT, bd=0, padx=12, pady=6).pack(side=tk.LEFT, padx=4)
+        tk.Button(btn, text="Cancel", command=self.destroy, bg=UI_THEME["panel_soft"], fg=UI_THEME["text"], activebackground=UI_THEME["panel_soft"], activeforeground=UI_THEME["text"], relief=tk.FLAT, bd=0, padx=12, pady=6).pack(side=tk.LEFT)
 
     def on_ok(self):
         t = RenderTask(
@@ -202,7 +224,8 @@ class MRQLauncher(tk.Tk):
         super().__init__()
         # Window title with version
         self.title(f"MRQ Launcher (CLI) ver {APP_VERSION}")
-        self.geometry("1320x840")
+        self.geometry("1480x920")
+        self.minsize(1280, 760)
         self.settings = AppSettings()
         self.current_process: Optional[subprocess.Popen] = None
         self._current_global_idx: Optional[int] = None
@@ -215,23 +238,126 @@ class MRQLauncher(tk.Tk):
         self.worker_running: bool = False
         # Session time label data
         self._session_total_label: Optional[tk.Label] = None
+        self.command_preview: Optional[tk.Text] = None
+        self.inspector_vars = {}
         self._build_ui()
         self.after(50, self._drain_queues)
         # Periodic update for the session total time label
         self.after(500, self._tick_session_total)
 
+
     # UI
     def _build_ui(self):
-        # ---- Menu Bar ----
-        menubar = tk.Menu(self)
-        # Task (only add/edit/duplicate here)
-        m_task = tk.Menu(menubar, tearoff=0)
+        self._configure_styles()
+        self._build_menu()
+
+        shell = tk.Frame(self, bg=UI_THEME["bg"])
+        shell.pack(fill=tk.BOTH, expand=True)
+
+        self.header_panel = self._create_panel(shell, padx=14, pady=12)
+        self.header_panel.pack(fill=tk.X, padx=12, pady=(12, 8))
+        self._build_header(self.header_panel)
+
+        body = tk.Frame(shell, bg=UI_THEME["bg"])
+        body.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 8))
+
+        self.sidebar_panel = self._create_panel(body, width=180, padx=12, pady=12)
+        self.sidebar_panel.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 8))
+        self.sidebar_panel.pack_propagate(False)
+        self._build_sidebar(self.sidebar_panel)
+
+        main_area = tk.Frame(body, bg=UI_THEME["bg"])
+        main_area.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        upper = tk.Frame(main_area, bg=UI_THEME["bg"])
+        upper.pack(fill=tk.BOTH, expand=True)
+
+        self.queue_panel = self._create_panel(upper, padx=12, pady=12)
+        self.queue_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 8))
+        self._build_queue_workspace(self.queue_panel)
+
+        self.inspector_panel = self._create_panel(upper, width=320, padx=12, pady=12)
+        self.inspector_panel.pack(side=tk.RIGHT, fill=tk.Y)
+        self.inspector_panel.pack_propagate(False)
+        self._build_inspector_panel(self.inspector_panel)
+
+        self.bottom_panel = self._create_panel(main_area, padx=12, pady=12)
+        self.bottom_panel.pack(fill=tk.BOTH, expand=False)
+        self._build_bottom_panel(self.bottom_panel)
+
+        self.status_bar = tk.Frame(shell, bg=UI_THEME["panel_alt"], highlightthickness=1, highlightbackground=UI_THEME["border"])
+        self.status_bar.pack(fill=tk.X, padx=12, pady=(0, 12))
+        self._build_status_bar(self.status_bar)
+
+        self.refresh_tree()
+        self._update_engine_labels()
+        self._update_inspector()
+        self._update_command_preview()
+        self._update_status_summary()
+
+    def _configure_styles(self):
+        self.configure(bg=UI_THEME["bg"])
+
+        style = ttk.Style(self)
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+
+        style.configure(
+            "Treeview",
+            background=UI_THEME["panel"],
+            fieldbackground=UI_THEME["panel"],
+            foreground=UI_THEME["text"],
+            bordercolor=UI_THEME["border"],
+            lightcolor=UI_THEME["border"],
+            darkcolor=UI_THEME["border"],
+            rowheight=28,
+            relief="flat",
+        )
+        style.map(
+            "Treeview",
+            background=[("selected", UI_THEME["accent_soft"])],
+            foreground=[("selected", "#FFFFFF")],
+        )
+        style.configure(
+            "Treeview.Heading",
+            background=UI_THEME["panel_soft"],
+            foreground=UI_THEME["text"],
+            bordercolor=UI_THEME["border"],
+            relief="flat",
+            padding=(8, 6),
+        )
+        style.map("Treeview.Heading", background=[("active", UI_THEME["panel_alt"])])
+
+        style.configure(
+            "TScrollbar",
+            background=UI_THEME["panel_alt"],
+            troughcolor=UI_THEME["entry"],
+            bordercolor=UI_THEME["border"],
+            arrowcolor=UI_THEME["text"],
+        )
+        style.configure(
+            "Dark.TCombobox",
+            fieldbackground=UI_THEME["entry"],
+            background=UI_THEME["panel_soft"],
+            foreground=UI_THEME["text"],
+            bordercolor=UI_THEME["border"],
+            lightcolor=UI_THEME["border"],
+            darkcolor=UI_THEME["border"],
+            arrowcolor=UI_THEME["text"],
+        )
+
+    def _build_menu(self):
+        menubar = tk.Menu(self, bg=UI_THEME["panel"], fg=UI_THEME["text"], activebackground=UI_THEME["panel_soft"], activeforeground=UI_THEME["text"])
+
+        m_task = tk.Menu(menubar, tearoff=0, bg=UI_THEME["panel"], fg=UI_THEME["text"], activebackground=UI_THEME["panel_soft"], activeforeground=UI_THEME["text"])
         m_task.add_command(label="Add Task", command=self.add_task)
         m_task.add_command(label="Edit Task", command=self.edit_task)
         m_task.add_command(label="Duplicate Task", command=self.duplicate_task)
         menubar.add_cascade(label="Task", menu=m_task)
-        # Selections (moved Move Up/Down here + Remove Task(s))
-        m_sel = tk.Menu(menubar, tearoff=0)
+
+        m_sel = tk.Menu(menubar, tearoff=0, bg=UI_THEME["panel"], fg=UI_THEME["text"], activebackground=UI_THEME["panel_soft"], activeforeground=UI_THEME["text"])
         m_sel.add_command(label="Enable All Tasks", command=lambda: self.set_enabled_all(True))
         m_sel.add_command(label="Disable All Tasks", command=lambda: self.set_enabled_all(False))
         m_sel.add_command(label="Remove Task(s)", command=self.remove_task)
@@ -241,8 +367,8 @@ class MRQLauncher(tk.Tk):
         m_sel.add_command(label="Move Up", command=lambda: self.move_selected(-1))
         m_sel.add_command(label="Move Down", command=lambda: self.move_selected(1))
         menubar.add_cascade(label="Selections", menu=m_sel)
-        # Render
-        m_run = tk.Menu(menubar, tearoff=0)
+
+        m_run = tk.Menu(menubar, tearoff=0, bg=UI_THEME["panel"], fg=UI_THEME["text"], activebackground=UI_THEME["panel_soft"], activeforeground=UI_THEME["text"])
         m_run.add_command(label="Render All", command=self.run_all)
         m_run.add_command(label="Render Selected", command=self.run_selected)
         m_run.add_command(label="Render Checked", command=self.run_enabled)
@@ -252,77 +378,221 @@ class MRQLauncher(tk.Tk):
         m_run.add_command(label="Cancel Current", command=self.cancel_current)
         m_run.add_command(label="Cancel All", command=self.cancel_all)
         menubar.add_cascade(label="Render", menu=m_run)
-        # Save
-        m_save = tk.Menu(menubar, tearoff=0)
+
+        m_save = tk.Menu(menubar, tearoff=0, bg=UI_THEME["panel"], fg=UI_THEME["text"], activebackground=UI_THEME["panel_soft"], activeforeground=UI_THEME["text"])
         m_save.add_command(label="Load Task(s)", command=self.load_tasks_dialog)
         m_save.add_command(label="Save Selected Task(s)", command=self.save_selected_tasks_dialog)
         m_save.add_separator()
         m_save.add_command(label="Load Queue", command=self.load_json_dialog)
         m_save.add_command(label="Save Queue", command=self.save_json_dialog)
+        m_save.add_command(label="Save Queue Log", command=self.save_queue_log)
         menubar.add_cascade(label="Save", menu=m_save)
+
         self.config(menu=menubar)
 
-        top = tk.Frame(self, padx=10, pady=8)
+    def _create_panel(self, parent, width=None, height=None, padx=0, pady=0):
+        frame = tk.Frame(
+            parent,
+            bg=UI_THEME["panel"],
+            highlightthickness=1,
+            highlightbackground=UI_THEME["border"],
+            padx=padx,
+            pady=pady,
+        )
+        if width is not None:
+            frame.configure(width=width)
+        if height is not None:
+            frame.configure(height=height)
+        return frame
+
+    def _make_button(self, parent, text, command, variant="secondary", width=None):
+        palette = {
+            "primary": (UI_THEME["accent"], "#FFFFFF"),
+            "danger": (UI_THEME["danger"], "#FFFFFF"),
+            "secondary": (UI_THEME["panel_soft"], UI_THEME["text"]),
+        }
+        bg, fg = palette.get(variant, palette["secondary"])
+        btn = tk.Button(
+            parent,
+            text=text,
+            command=command,
+            width=width,
+            bg=bg,
+            fg=fg,
+            activebackground=bg,
+            activeforeground=fg,
+            relief=tk.FLAT,
+            bd=0,
+            padx=10,
+            pady=7,
+            highlightthickness=0,
+            cursor="hand2",
+        )
+        return btn
+
+    def _make_entry(self, parent, textvariable=None, width=None):
+        entry = tk.Entry(
+            parent,
+            textvariable=textvariable,
+            width=width,
+            bg=UI_THEME["entry"],
+            fg=UI_THEME["text"],
+            insertbackground=UI_THEME["text"],
+            relief=tk.FLAT,
+            bd=0,
+            highlightthickness=1,
+            highlightbackground=UI_THEME["border"],
+            highlightcolor=UI_THEME["accent"],
+        )
+        return entry
+
+    def _section_title(self, parent, title, subtitle=""):
+        wrapper = tk.Frame(parent, bg=UI_THEME["panel"])
+        wrapper.pack(fill=tk.X, pady=(0, 10))
+        tk.Label(wrapper, text=title, bg=UI_THEME["panel"], fg=UI_THEME["text"], font=("Segoe UI", 14, "bold")).pack(anchor="w")
+        if subtitle:
+            tk.Label(wrapper, text=subtitle, bg=UI_THEME["panel"], fg=UI_THEME["muted"], font=("Segoe UI", 9)).pack(anchor="w", pady=(2, 0))
+        return wrapper
+
+    def _build_header(self, parent):
+        top = tk.Frame(parent, bg=UI_THEME["panel"])
         top.pack(fill=tk.X)
-        tk.Label(top, text="UnrealEditor-Cmd.exe:").pack(side=tk.LEFT)
+
+        title_block = tk.Frame(top, bg=UI_THEME["panel"])
+        title_block.pack(side=tk.LEFT, fill=tk.Y)
+        tk.Label(title_block, text="MRQ Launcher CLI", bg=UI_THEME["panel"], fg=UI_THEME["text"], font=("Segoe UI", 16, "bold")).pack(anchor="w")
+        tk.Label(
+            title_block,
+            text="Dark Studio Console",
+            bg=UI_THEME["panel"],
+            fg=UI_THEME["muted"],
+            font=("Segoe UI", 9),
+        ).pack(anchor="w", pady=(2, 0))
+
+        actions = tk.Frame(top, bg=UI_THEME["panel"])
+        actions.pack(side=tk.RIGHT)
+        self._make_button(actions, "Load Queue", self.load_json_dialog).pack(side=tk.LEFT, padx=(0, 6))
+        self._make_button(actions, "Save Queue", self.save_json_dialog).pack(side=tk.LEFT, padx=(0, 6))
+        self._make_button(actions, "Save Queue Log", self.save_queue_log).pack(side=tk.LEFT)
+
+        path_row = tk.Frame(parent, bg=UI_THEME["panel"])
+        path_row.pack(fill=tk.X, pady=(14, 0))
+
+        tk.Label(path_row, text="UnrealEditor-Cmd.exe", bg=UI_THEME["panel"], fg=UI_THEME["muted"], font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(0, 10))
         self.var_ue = StringVar(value=self.settings.ue_cmd)
-        tk.Entry(top, textvariable=self.var_ue, width=100).pack(side=tk.LEFT, padx=6)
-        tk.Button(top, text="Browse", command=self.browse_ue).pack(side=tk.LEFT)
-        tk.Label(top, text="Retries:").pack(side=tk.LEFT, padx=(12,4))
+        self.ue_entry = self._make_entry(path_row, textvariable=self.var_ue)
+        self.ue_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self._make_button(path_row, "Browse", self.browse_ue, width=10).pack(side=tk.LEFT, padx=(8, 0))
+
         self.var_retries = tk.IntVar(value=self.settings.retries)
-        tk.Spinbox(top, from_=0, to=3, width=3, textvariable=self.var_retries).pack(side=tk.LEFT)
-        tk.Label(top, text="On fail:").pack(side=tk.LEFT, padx=(12,4))
         self.var_policy = StringVar(value=self.settings.fail_policy)
-        ttk.Combobox(top, textvariable=self.var_policy, width=16, state="readonly",
-                     values=("retry_then_next","skip_next","stop_queue")).pack(side=tk.LEFT)
-        tk.Label(top, text="Kill timeout s:").pack(side=tk.LEFT, padx=(12,4))
         self.var_kill_timeout = tk.IntVar(value=self.settings.kill_timeout_s)
-        tk.Spinbox(top, from_=0, to=120, width=4, textvariable=self.var_kill_timeout).pack(side=tk.LEFT)
-
-        # ---- Row: Render opts (windowed / res / NTS / extra) ----
-        opts = tk.Frame(self, padx=10, pady=4)
-        opts.pack(fill=tk.X)
         self.var_windowed = tk.BooleanVar(value=self.settings.windowed)
-        tk.Checkbutton(opts, text="Windowed", variable=self.var_windowed).pack(side=tk.LEFT)
-        tk.Label(opts, text="ResX:").pack(side=tk.LEFT, padx=(12,4))
         self.var_resx = tk.IntVar(value=self.settings.resx)
-        tk.Spinbox(opts, from_=320, to=16384, width=6, textvariable=self.var_resx).pack(side=tk.LEFT)
-        tk.Label(opts, text="ResY:").pack(side=tk.LEFT, padx=(12,4))
         self.var_resy = tk.IntVar(value=self.settings.resy)
-        tk.Spinbox(opts, from_=240, to=16384, width=6, textvariable=self.var_resy).pack(side=tk.LEFT)
         self.var_nts = tk.BooleanVar(value=self.settings.no_texture_streaming)
-        tk.Checkbutton(opts, text="No Texture Streaming (-notexturestreaming)", variable=self.var_nts).pack(side=tk.LEFT, padx=(12,0))
-        tk.Label(opts, text="Extra CLI:").pack(side=tk.LEFT, padx=(12,4))
         self.var_extra = StringVar(value=self.settings.extra_cli)
-        tk.Entry(opts, textvariable=self.var_extra, width=60).pack(side=tk.LEFT, padx=(0,6), fill=tk.X, expand=True)
 
-        # ---- Split area: table (left) + scrollable right sidebar with buttons ----
-        mid = ttk.Panedwindow(self, orient="horizontal")
-        mid.pack(fill=tk.BOTH, expand=True, padx=10, pady=8)
-        left_pane = tk.Frame(mid)
-        # Selections / Render buttons (vertical right panel, fixed width 165px)
-        right_shell = tk.Frame(mid, width=165)  # will contain a Canvas with vertical scrollbar
-        mid.add(left_pane, weight=4)
-        mid.add(right_shell, weight=0)
-        right_shell.pack_propagate(False)  # enforce fixed width
+        opts = tk.Frame(parent, bg=UI_THEME["panel"])
+        opts.pack(fill=tk.X, pady=(12, 0))
 
-        cols = ("enabled", "level", "sequence", "preset", "status", "notes")
-        self.tree = ttk.Treeview(left_pane, columns=cols, show="headings", selectmode="extended")
-        for name, title, width in (
-            ("enabled", "✔", 40),
-            ("level", "Level", 220),
-            ("sequence", "Sequence", 220),
-            ("preset", "Preset", 300),
-            ("status", "Status", 220),
-            ("notes", "Notes", 260),
+        tk.Label(opts, text="Retries", bg=UI_THEME["panel"], fg=UI_THEME["muted"], font=("Segoe UI", 9)).pack(side=tk.LEFT)
+        tk.Spinbox(opts, from_=0, to=3, width=3, textvariable=self.var_retries, bg=UI_THEME["entry"], fg=UI_THEME["text"], buttonbackground=UI_THEME["panel_soft"], insertbackground=UI_THEME["text"], relief=tk.FLAT).pack(side=tk.LEFT, padx=(6, 12))
+
+        tk.Label(opts, text="On fail", bg=UI_THEME["panel"], fg=UI_THEME["muted"], font=("Segoe UI", 9)).pack(side=tk.LEFT)
+        ttk.Combobox(opts, textvariable=self.var_policy, width=16, state="readonly", style="Dark.TCombobox",
+                     values=("retry_then_next", "skip_next", "stop_queue")).pack(side=tk.LEFT, padx=(6, 12))
+
+        tk.Label(opts, text="Kill timeout s", bg=UI_THEME["panel"], fg=UI_THEME["muted"], font=("Segoe UI", 9)).pack(side=tk.LEFT)
+        tk.Spinbox(opts, from_=0, to=120, width=4, textvariable=self.var_kill_timeout, bg=UI_THEME["entry"], fg=UI_THEME["text"], buttonbackground=UI_THEME["panel_soft"], insertbackground=UI_THEME["text"], relief=tk.FLAT).pack(side=tk.LEFT, padx=(6, 12))
+
+        tk.Checkbutton(opts, text="Windowed", variable=self.var_windowed, bg=UI_THEME["panel"], fg=UI_THEME["text"], selectcolor=UI_THEME["entry"], activebackground=UI_THEME["panel"], activeforeground=UI_THEME["text"]).pack(side=tk.LEFT)
+        tk.Label(opts, text="ResX", bg=UI_THEME["panel"], fg=UI_THEME["muted"], font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(12, 0))
+        tk.Spinbox(opts, from_=320, to=16384, width=6, textvariable=self.var_resx, bg=UI_THEME["entry"], fg=UI_THEME["text"], buttonbackground=UI_THEME["panel_soft"], insertbackground=UI_THEME["text"], relief=tk.FLAT).pack(side=tk.LEFT, padx=(6, 12))
+        tk.Label(opts, text="ResY", bg=UI_THEME["panel"], fg=UI_THEME["muted"], font=("Segoe UI", 9)).pack(side=tk.LEFT)
+        tk.Spinbox(opts, from_=240, to=16384, width=6, textvariable=self.var_resy, bg=UI_THEME["entry"], fg=UI_THEME["text"], buttonbackground=UI_THEME["panel_soft"], insertbackground=UI_THEME["text"], relief=tk.FLAT).pack(side=tk.LEFT, padx=(6, 12))
+        tk.Checkbutton(opts, text="No Texture Streaming", variable=self.var_nts, bg=UI_THEME["panel"], fg=UI_THEME["text"], selectcolor=UI_THEME["entry"], activebackground=UI_THEME["panel"], activeforeground=UI_THEME["text"]).pack(side=tk.LEFT, padx=(0, 12))
+
+        tk.Label(opts, text="Extra CLI", bg=UI_THEME["panel"], fg=UI_THEME["muted"], font=("Segoe UI", 9)).pack(side=tk.LEFT)
+        self.extra_entry = self._make_entry(opts, textvariable=self.var_extra, width=28)
+        self.extra_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(6, 0))
+
+    def _build_sidebar(self, parent):
+        self._section_title(parent, "Navigation", "Production workspace")
+
+        for name in ("Queue", "Presets", "Profiles", "Settings", "Logs", "About"):
+            variant = "primary" if name == "Queue" else "secondary"
+            btn = self._make_button(parent, name, command=lambda n=name: None, variant=variant)
+            btn.pack(fill=tk.X, pady=3)
+
+        tk.Frame(parent, bg=UI_THEME["border"], height=1).pack(fill=tk.X, pady=12)
+
+        self._section_title(parent, "Engine", "Runtime context")
+        self.sidebar_engine_state = StringVar(value="Detected")
+        self.sidebar_engine_version = StringVar(value="Version: ?")
+        self.sidebar_engine_path = StringVar(value="Path not set")
+
+        tk.Label(parent, textvariable=self.sidebar_engine_state, bg=UI_THEME["panel"], fg=UI_THEME["text"], font=("Segoe UI", 10, "bold")).pack(anchor="w")
+        tk.Label(parent, textvariable=self.sidebar_engine_version, bg=UI_THEME["panel"], fg=UI_THEME["muted"], font=("Segoe UI", 9)).pack(anchor="w", pady=(4, 0))
+        self.sidebar_path_label = tk.Label(
+            parent,
+            textvariable=self.sidebar_engine_path,
+            bg=UI_THEME["panel"],
+            fg=UI_THEME["muted"],
+            font=("Segoe UI", 8),
+            justify=tk.LEFT,
+            wraplength=140,
+        )
+        self.sidebar_path_label.pack(anchor="w", pady=(6, 0))
+
+    def _build_queue_workspace(self, parent):
+        self._section_title(parent, "Render Queue", "Main operational surface")
+
+        toolbar = tk.Frame(parent, bg=UI_THEME["panel"])
+        toolbar.pack(fill=tk.X, pady=(0, 10))
+
+        left = tk.Frame(toolbar, bg=UI_THEME["panel"])
+        left.pack(side=tk.LEFT)
+        self._make_button(left, "Add Job", self.add_task).pack(side=tk.LEFT, padx=(0, 6))
+        self._make_button(left, "Edit", self.edit_task).pack(side=tk.LEFT, padx=(0, 6))
+        self._make_button(left, "Duplicate", self.duplicate_task).pack(side=tk.LEFT, padx=(0, 6))
+        self._make_button(left, "Remove", self.remove_task).pack(side=tk.LEFT, padx=(0, 6))
+        self._make_button(left, "Move Up", lambda: self.move_selected(-1)).pack(side=tk.LEFT, padx=(0, 6))
+        self._make_button(left, "Move Down", lambda: self.move_selected(1)).pack(side=tk.LEFT, padx=(0, 6))
+        self._make_button(left, "Toggle", self.toggle_selected).pack(side=tk.LEFT)
+
+        right = tk.Frame(toolbar, bg=UI_THEME["panel"])
+        right.pack(side=tk.RIGHT, fill=tk.X)
+        tk.Label(right, text="Filter", bg=UI_THEME["panel"], fg=UI_THEME["muted"], font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(0, 8))
+        self.var_task_filter = StringVar()
+        self.var_task_filter.trace_add("write", lambda *_: self.refresh_tree())
+        self.filter_entry = self._make_entry(right, textvariable=self.var_task_filter, width=28)
+        self.filter_entry.pack(side=tk.LEFT)
+
+        tree_shell = tk.Frame(parent, bg=UI_THEME["panel"])
+        tree_shell.pack(fill=tk.BOTH, expand=True)
+
+        cols = ("enabled", "job", "level", "sequence", "preset", "status", "output", "notes")
+        self.tree = ttk.Treeview(tree_shell, columns=cols, show="headings", selectmode="extended")
+        for name, title, width, anchor in (
+            ("enabled", "On", 48, "center"),
+            ("job", "Job", 160, "w"),
+            ("level", "Level", 180, "w"),
+            ("sequence", "Sequence", 180, "w"),
+            ("preset", "Preset", 180, "w"),
+            ("status", "Status", 170, "w"),
+            ("output", "Output", 150, "w"),
+            ("notes", "Notes", 220, "w"),
         ):
             self.tree.heading(name, text=title)
-            self.tree.column(name, width=width, anchor="center" if name=="enabled" else "w")
+            self.tree.column(name, width=width, anchor=anchor, stretch=(name != "enabled"))
+
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.tree.bind("<Double-1>", self.on_tree_dblclick)
         self.tree.bind("<space>", self.on_space_toggle)
-        # Right-click context menu for task operations
-        self.ctx_task = tk.Menu(self, tearoff=0)
+        self.tree.bind("<<TreeviewSelect>>", self._on_tree_selection_changed)
+
+        self.ctx_task = tk.Menu(self, tearoff=0, bg=UI_THEME["panel"], fg=UI_THEME["text"], activebackground=UI_THEME["panel_soft"], activeforeground=UI_THEME["text"])
         self.ctx_task.add_command(label="Add Task", command=self.add_task)
         self.ctx_task.add_command(label="Edit Task", command=self.edit_task)
         self.ctx_task.add_command(label="Duplicate Task", command=self.duplicate_task)
@@ -330,96 +600,286 @@ class MRQLauncher(tk.Tk):
         self.ctx_task.add_separator()
         self.ctx_task.add_command(label="Move Up", command=lambda: self.move_selected(-1))
         self.ctx_task.add_command(label="Move Down", command=lambda: self.move_selected(1))
-        # Duplicate Save/Load under context menu (renamed section)
         self.ctx_task.add_separator()
-        self.ctx_task.add_command(label="Task Save/Load", state="disabled")  # section header
-        self.ctx_task.add_command(label="Load Task(s)…", command=self.load_tasks_dialog)
-        self.ctx_task.add_command(label="Save Selected Task(s)…", command=self.save_selected_tasks_dialog)
+        self.ctx_task.add_command(label="Load Task(s)...", command=self.load_tasks_dialog)
+        self.ctx_task.add_command(label="Save Selected Task(s)...", command=self.save_selected_tasks_dialog)
         self.ctx_task.add_separator()
-        self.ctx_task.add_command(label="Load Queue…", command=self.load_json_dialog)
-        self.ctx_task.add_command(label="Save Queue…", command=self.save_json_dialog)
-        self.ctx_task.add_command(label="Save Queue Log…", command=self.save_queue_log)
+        self.ctx_task.add_command(label="Load Queue...", command=self.load_json_dialog)
+        self.ctx_task.add_command(label="Save Queue...", command=self.save_json_dialog)
+        self.ctx_task.add_command(label="Save Queue Log...", command=self.save_queue_log)
         self.ctx_task.add_separator()
         self.ctx_task.add_command(label="Clear Status", command=self.clear_status_selected)
-        # Bind right-click (Button-3 on Windows/Linux; macOS users often use Ctrl-Click)
         self.tree.bind("<Button-3>", self._on_tree_right_click)
         self.tree.bind("<Control-Button-1>", self._on_tree_right_click)
 
-        # Vertical and horizontal scrollbars for the task table
-        sb = ttk.Scrollbar(left_pane, orient="vertical", command=self.tree.yview)
+        sb = ttk.Scrollbar(tree_shell, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=sb.set)
-        sb.pack(side=tk.LEFT, fill=tk.Y)
-        hsb = ttk.Scrollbar(left_pane, orient="horizontal", command=self.tree.xview)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+
+        hsb = ttk.Scrollbar(parent, orient="horizontal", command=self.tree.xview)
         self.tree.configure(xscrollcommand=hsb.set)
-        hsb.pack(side=tk.BOTTOM, fill=tk.X)
+        hsb.pack(fill=tk.X, pady=(8, 0))
 
-        # ---- Scrollable right sidebar (vertical layout; no clipping) ----
-        right_canvas = tk.Canvas(right_shell, highlightthickness=0)
-        right_scroll = ttk.Scrollbar(right_shell, orient="vertical", command=right_canvas.yview)
-        right_frame = tk.Frame(right_canvas)
-        right_frame.bind("<Configure>", lambda e: right_canvas.configure(scrollregion=right_canvas.bbox("all")))
-        right_canvas.create_window((0, 0), window=right_frame, anchor="nw")
-        right_canvas.configure(yscrollcommand=right_scroll.set)
-        right_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        right_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+    def _build_inspector_panel(self, parent):
+        self._section_title(parent, "Job Inspector", "Selected row details")
 
-        # Selections group (vertical buttons)
-        grp_sel = ttk.LabelFrame(right_frame, text="Selections")
-        grp_sel.pack(fill=tk.X, pady=6)
-        tk.Button(grp_sel, text="Enable All Tasks", width=20, command=lambda: self.set_enabled_all(True)).pack(pady=2)
-        tk.Button(grp_sel, text="Disable All Tasks", width=20, command=lambda: self.set_enabled_all(False)).pack(pady=2)
-        tk.Button(grp_sel, text="Remove Task(s)", width=20, command=self.remove_task).pack(pady=2)
-        tk.Button(grp_sel, text="Remove Unchecked Tasks", width=20, command=self.remove_unchecked_tasks).pack(pady=2)
-        tk.Button(grp_sel, text="Toggle Selection", width=20, command=self.toggle_selected).pack(pady=2)
-        tk.Button(grp_sel, text="Move Up", width=20, command=lambda: self.move_selected(-1)).pack(pady=2)
-        tk.Button(grp_sel, text="Move Down", width=20, command=lambda: self.move_selected(1)).pack(pady=2)
+        self.inspector_vars = {
+            "job": StringVar(value="No selection"),
+            "enabled": StringVar(value="-"),
+            "uproject": StringVar(value="-"),
+            "level": StringVar(value="-"),
+            "sequence": StringVar(value="-"),
+            "preset": StringVar(value="-"),
+            "output": StringVar(value="-"),
+            "notes": StringVar(value="-"),
+            "validation": StringVar(value="Validation: -"),
+        }
 
-        # Render group (vertical buttons)
-        grp_run = ttk.LabelFrame(right_frame, text="Render")
-        grp_run.pack(fill=tk.X, pady=6)
-        tk.Button(grp_run, text="Render All", width=20, command=self.run_all).pack(pady=2)
-        tk.Button(grp_run, text="Render Selected", width=20, command=self.run_selected).pack(pady=2)
-        tk.Button(grp_run, text="Render Checked", width=20, command=self.run_enabled).pack(pady=2)
-        tk.Button(grp_run, text="Add Task(s) to Queue", width=20, command=self.enqueue_selected_or_enabled).pack(pady=2)
-        tk.Button(grp_run, text="Clear Status", width=20, command=self.clear_status_selected).pack(pady=2)
-        tk.Button(grp_run, text="Cancel Current", width=20, command=self.cancel_current).pack(pady=2)
-        tk.Button(grp_run, text="Cancel All", width=20, command=self.cancel_all).pack(pady=2)
+        fields = (
+            ("Job Name", "job"),
+            ("Enabled", "enabled"),
+            ("Project", "uproject"),
+            ("Level", "level"),
+            ("Sequence", "sequence"),
+            ("Preset", "preset"),
+            ("Output Directory", "output"),
+            ("Description", "notes"),
+        )
+        for title, key in fields:
+            row = tk.Frame(parent, bg=UI_THEME["panel"])
+            row.pack(fill=tk.X, pady=(0, 10))
+            tk.Label(row, text=title, bg=UI_THEME["panel"], fg=UI_THEME["muted"], font=("Segoe UI", 9)).pack(anchor="w")
+            tk.Label(
+                row,
+                textvariable=self.inspector_vars[key],
+                bg=UI_THEME["entry"],
+                fg=UI_THEME["text"],
+                font=("Segoe UI", 9),
+                justify=tk.LEFT,
+                wraplength=260,
+                padx=8,
+                pady=6,
+                anchor="w",
+                relief=tk.FLAT,
+                highlightthickness=1,
+                highlightbackground=UI_THEME["border"],
+            ).pack(fill=tk.X, pady=(4, 0))
 
-        # ---- Bottom bar: Logs (left) + Queue I/O (right within tasks area)
-        # We emulate the same split as above: left area under the tasks table,
-        # plus a fixed-width placeholder on the right (equal to sidebar width).
-        bottom_bar = tk.Frame(self, padx=10)
-        bottom_bar.pack(fill=tk.X, pady=(0, 4))
-        left_bottom = tk.Frame(bottom_bar)
-        left_bottom.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        right_placeholder = tk.Frame(bottom_bar, width=165)  # keep in sync with sidebar width
-        right_placeholder.pack(side=tk.RIGHT, fill=tk.Y)
-        right_placeholder.pack_propagate(False)
-        # Left: log helpers
-        logs_bar = tk.Frame(left_bottom)
-        logs_bar.pack(side=tk.LEFT)
-        tk.Button(logs_bar, text="Open Logs Folder", command=self.open_logs_folder).pack(side=tk.LEFT, padx=(0,6))
-        tk.Button(logs_bar, text="Open Last Log (Selected)", command=self.open_last_log_for_selected).pack(side=tk.LEFT)
-        # Right inside the tasks width: two fixed-size buttons (~150px)
-        qbtns = tk.Frame(left_bottom)
-        qbtns.pack(side=tk.RIGHT)
-        tk.Button(qbtns, text="Load Queue", width=18, command=self.load_json_dialog).pack(side=tk.LEFT, padx=3)
-        tk.Button(qbtns, text="Save Queue", width=18, command=self.save_json_dialog).pack(side=tk.LEFT, padx=3)
-        tk.Button(qbtns, text="Save Queue Log", width=18, command=self.save_queue_log).pack(side=tk.LEFT, padx=3)
+        tk.Label(parent, textvariable=self.inspector_vars["validation"], bg=UI_THEME["panel"], fg=UI_THEME["text"], font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(6, 10))
 
-        # ---- Fixed session total time row (just under the table area) ----
-        # Sits above the log box.
-        bar = tk.Frame(self, padx=12)
-        bar.pack(fill=tk.X, padx=10, pady=(0, 0))
-        self._session_total_label = tk.Label(bar, text="Session total: 00:00:00", anchor="w")
-        self._session_total_label.pack(side=tk.LEFT)
+        actions = tk.Frame(parent, bg=UI_THEME["panel"])
+        actions.pack(fill=tk.X, pady=(8, 0))
+        self._make_button(actions, "Edit Selected", self.edit_task, variant="primary").pack(fill=tk.X, pady=(0, 6))
+        self._make_button(actions, "Duplicate", self.duplicate_task).pack(fill=tk.X, pady=(0, 6))
+        self._make_button(actions, "Remove", self.remove_task, variant="danger").pack(fill=tk.X)
 
-        bottom = tk.Frame(self, padx=10, pady=6)
-        bottom.pack(fill=tk.BOTH)
-        self.log = tk.Text(bottom, height=12)
-        self.log.pack(fill=tk.BOTH, expand=True)
+    def _build_bottom_panel(self, parent):
+        top = tk.Frame(parent, bg=UI_THEME["panel"])
+        top.pack(fill=tk.X)
 
-        self.refresh_tree()
+        controls = tk.Frame(top, bg=UI_THEME["panel"])
+        controls.pack(side=tk.LEFT)
+        self._make_button(controls, "Render Enabled", self.run_enabled, variant="primary").pack(side=tk.LEFT, padx=(0, 6))
+        self._make_button(controls, "Render Selected", self.run_selected).pack(side=tk.LEFT, padx=(0, 6))
+        self._make_button(controls, "Queue Selected", self.enqueue_selected_or_enabled).pack(side=tk.LEFT, padx=(0, 6))
+        self._make_button(controls, "Render All", self.run_all).pack(side=tk.LEFT, padx=(0, 6))
+        self._make_button(controls, "Clear Status", self.clear_status_selected).pack(side=tk.LEFT, padx=(0, 6))
+        self._make_button(controls, "Stop All", self.cancel_all, variant="danger").pack(side=tk.LEFT)
+
+        logs_actions = tk.Frame(top, bg=UI_THEME["panel"])
+        logs_actions.pack(side=tk.RIGHT)
+        self._make_button(logs_actions, "Open Logs Folder", self.open_logs_folder).pack(side=tk.LEFT, padx=(0, 6))
+        self._make_button(logs_actions, "Open Last Log", self.open_last_log_for_selected).pack(side=tk.LEFT)
+
+        info_row = tk.Frame(parent, bg=UI_THEME["panel"])
+        info_row.pack(fill=tk.X, pady=(12, 10))
+        self.current_task_var = StringVar(value="Current task: Idle")
+        tk.Label(info_row, textvariable=self.current_task_var, bg=UI_THEME["panel"], fg=UI_THEME["text"], font=("Segoe UI", 10, "bold")).pack(side=tk.LEFT)
+        self._session_total_label = tk.Label(info_row, text="Session total: 00:00:00", bg=UI_THEME["panel"], fg=UI_THEME["muted"], font=("Segoe UI", 10))
+        self._session_total_label.pack(side=tk.RIGHT)
+
+        split = tk.PanedWindow(parent, orient=tk.HORIZONTAL, sashwidth=6, bg=UI_THEME["panel"], bd=0, relief=tk.FLAT)
+        split.pack(fill=tk.BOTH, expand=True)
+
+        cmd_panel = self._create_panel(split, padx=10, pady=10)
+        split.add(cmd_panel, minsize=320)
+        tk.Label(cmd_panel, text="Command Preview", bg=UI_THEME["panel"], fg=UI_THEME["text"], font=("Segoe UI", 11, "bold")).pack(anchor="w")
+        self.command_preview = tk.Text(
+            cmd_panel,
+            height=8,
+            bg=UI_THEME["entry"],
+            fg=UI_THEME["text"],
+            insertbackground=UI_THEME["text"],
+            relief=tk.FLAT,
+            bd=0,
+            wrap="word",
+            highlightthickness=1,
+            highlightbackground=UI_THEME["border"],
+            padx=8,
+            pady=8,
+        )
+        self.command_preview.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
+
+        log_panel = self._create_panel(split, padx=10, pady=10)
+        split.add(log_panel, minsize=420)
+        tk.Label(log_panel, text="Log", bg=UI_THEME["panel"], fg=UI_THEME["text"], font=("Segoe UI", 11, "bold")).pack(anchor="w")
+        self.log = tk.Text(
+            log_panel,
+            height=8,
+            bg=UI_THEME["entry"],
+            fg=UI_THEME["text"],
+            insertbackground=UI_THEME["text"],
+            relief=tk.FLAT,
+            bd=0,
+            wrap="word",
+            highlightthickness=1,
+            highlightbackground=UI_THEME["border"],
+            padx=8,
+            pady=8,
+        )
+        self.log.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, pady=(8, 0))
+        log_scroll = ttk.Scrollbar(log_panel, orient="vertical", command=self.log.yview)
+        self.log.configure(yscrollcommand=log_scroll.set)
+        log_scroll.pack(side=tk.RIGHT, fill=tk.Y, pady=(8, 0))
+
+    def _build_status_bar(self, parent):
+        self.status_overall_var = StringVar(value="State: Idle")
+        self.status_counts_var = StringVar(value="Queued: 0 | Running: 0 | Failed: 0 | Done: 0")
+        self.status_engine_var = StringVar(value="Engine: ?")
+
+        tk.Label(parent, textvariable=self.status_overall_var, bg=UI_THEME["panel_alt"], fg=UI_THEME["text"], font=("Segoe UI", 9, "bold"), padx=10, pady=6).pack(side=tk.LEFT)
+        tk.Label(parent, textvariable=self.status_counts_var, bg=UI_THEME["panel_alt"], fg=UI_THEME["muted"], font=("Segoe UI", 9), padx=10, pady=6).pack(side=tk.LEFT)
+        tk.Label(parent, textvariable=self.status_engine_var, bg=UI_THEME["panel_alt"], fg=UI_THEME["muted"], font=("Segoe UI", 9), padx=10, pady=6).pack(side=tk.RIGHT)
+
+    def _detect_ue_version(self) -> str:
+        ue_path = self.var_ue.get().strip() if hasattr(self, "var_ue") else self.settings.ue_cmd
+        parts = ue_path.replace("\\", "/").split("/")
+        for part in parts:
+            if part.startswith("UE_"):
+                return part.replace("_", " ")
+        return "Unknown"
+
+    def _update_engine_labels(self):
+        ue_path = self.var_ue.get().strip() if hasattr(self, "var_ue") else self.settings.ue_cmd
+        detected = "Detected" if ue_path and os.path.exists(ue_path) else "Missing"
+        version = self._detect_ue_version()
+        if hasattr(self, "sidebar_engine_state"):
+            self.sidebar_engine_state.set(detected)
+        if hasattr(self, "sidebar_engine_version"):
+            self.sidebar_engine_version.set(f"Version: {version}")
+        if hasattr(self, "sidebar_engine_path"):
+            self.sidebar_engine_path.set(ue_path or "Path not set")
+        if hasattr(self, "status_engine_var"):
+            self.status_engine_var.set(f"Engine: {version}")
+
+    def _selected_task(self) -> Optional[RenderTask]:
+        sel = self._selected_indices()
+        if not sel:
+            return None
+        idx = sel[0]
+        if 0 <= idx < len(self.settings.tasks):
+            return self.settings.tasks[idx]
+        return None
+
+    def _selected_task_index(self) -> Optional[int]:
+        sel = self._selected_indices()
+        if not sel:
+            return None
+        return sel[0]
+
+    def _build_command_preview_for_task(self, task: RenderTask) -> str:
+        ue_cmd = self.var_ue.get().strip() or "<UnrealEditor-Cmd.exe>"
+        cmd = [
+            ue_cmd,
+            task.uproject or "<uproject>",
+            task.level.split(".")[0] if task.level else "<map>",
+            "-game",
+            f'-LevelSequence="{task.sequence or "<sequence>"}"',
+            f'-MoviePipelineConfig="{task.preset or "<preset>"}"',
+            "-log",
+        ]
+        if bool(self.var_windowed.get()):
+            cmd.append("-windowed")
+        else:
+            cmd.append("-fullscreen")
+        cmd += [f"-ResX={int(self.var_resx.get())}", f"-ResY={int(self.var_resy.get())}"]
+        if bool(self.var_nts.get()):
+            cmd.append("-notexturestreaming")
+        extra = (self.var_extra.get() or "").strip()
+        if extra:
+            cmd += shlex.split(extra)
+        if task.output_dir:
+            cmd.append(f'-OutputDirectory="{task.output_dir}"')
+        return " \
+".join(cmd)
+
+    def _update_inspector(self):
+        if not self.inspector_vars:
+            return
+        task = self._selected_task()
+        if task is None:
+            self.inspector_vars["job"].set("No selection")
+            self.inspector_vars["enabled"].set("-")
+            self.inspector_vars["uproject"].set("-")
+            self.inspector_vars["level"].set("-")
+            self.inspector_vars["sequence"].set("-")
+            self.inspector_vars["preset"].set("-")
+            self.inspector_vars["output"].set("-")
+            self.inspector_vars["notes"].set("-")
+            self.inspector_vars["validation"].set("Validation: -")
+            return
+
+        job_name = task.notes.strip() or soft_name(task.sequence)
+        valid = all([task.uproject, task.level, task.sequence, task.preset])
+
+        self.inspector_vars["job"].set(job_name)
+        self.inspector_vars["enabled"].set("Yes" if task.enabled else "No")
+        self.inspector_vars["uproject"].set(task.uproject or "-")
+        self.inspector_vars["level"].set(task.level or "-")
+        self.inspector_vars["sequence"].set(task.sequence or "-")
+        self.inspector_vars["preset"].set(task.preset or "-")
+        self.inspector_vars["output"].set(task.output_dir or "Preset default")
+        self.inspector_vars["notes"].set(task.notes or "-")
+        self.inspector_vars["validation"].set(f"Validation: {'Ready' if valid else 'Incomplete'}")
+
+    def _update_command_preview(self):
+        if self.command_preview is None:
+            return
+        task = self._selected_task()
+        if task is None and self._current_global_idx is not None and 0 <= self._current_global_idx < len(self.settings.tasks):
+            task = self.settings.tasks[self._current_global_idx]
+
+        if task is None:
+            content = "Select a task to inspect the generated command line."
+        else:
+            content = self._build_command_preview_for_task(task)
+
+        self.command_preview.config(state="normal")
+        self.command_preview.delete("1.0", "end")
+        self.command_preview.insert("1.0", content)
+        self.command_preview.config(state="disabled")
+
+    def _update_status_summary(self):
+        statuses = [s.get("status", "Ready") for s in self.state]
+        queued = sum(1 for s in statuses if s == "Queued")
+        running = sum(1 for s in statuses if s.startswith("Rendering"))
+        failed = sum(1 for s in statuses if s.startswith("Failed"))
+        done = sum(1 for s in statuses if s.startswith("Done"))
+
+        overall = "Running" if self.worker_running or (self.current_process and self.current_process.poll() is None) else "Idle"
+        self.status_overall_var.set(f"State: {overall}")
+        self.status_counts_var.set(f"Queued: {queued} | Running: {running} | Failed: {failed} | Done: {done}")
+
+        if self._current_global_idx is not None and 0 <= self._current_global_idx < len(self.settings.tasks):
+            task = self.settings.tasks[self._current_global_idx]
+            self.current_task_var.set(f"Current task: {soft_name(task.sequence)}")
+        else:
+            self.current_task_var.set("Current task: Idle")
+
+    def _on_tree_selection_changed(self, _event=None):
+        self._update_inspector()
+        self._update_command_preview()
+        self._update_status_summary()
 
     def _find_task_index_by_identity(self, task: RenderTask) -> Optional[int]:
         """
@@ -449,12 +909,23 @@ class MRQLauncher(tk.Tk):
     # ---- Runtime state helpers ----
     def _ensure_state(self):
         while len(self.state) < len(self.settings.tasks):
-            self.state.append({"status": "—", "progress": None, "start": None, "end": None})
+            self.state.append(default_task_state())
 
     def _row_values(self, i: int):
         t = self.settings.tasks[i]
-        st = self.state[i]["status"] if i < len(self.state) else "—"
-        return ("✔" if t.enabled else " ", soft_name(t.level), soft_name(t.sequence), soft_name(t.preset), st, t.notes)
+        st = self.state[i]["status"] if i < len(self.state) else "Ready"
+        job_name = t.notes.strip() or soft_name(t.sequence)
+        output_name = os.path.basename(t.output_dir.rstrip("/")) if t.output_dir else "Preset default"
+        return (
+            "✔" if t.enabled else "",
+            job_name,
+            soft_name(t.level),
+            soft_name(t.sequence),
+            soft_name(t.preset),
+            st,
+            output_name,
+            t.notes,
+        )
 
     def _set_status_async(self, idx: int, text: str):
         self.ui_queue.put(("set_status", idx, text))
@@ -465,9 +936,31 @@ class MRQLauncher(tk.Tk):
     # Tree helpers
     def refresh_tree(self):
         self._ensure_state()
+        previous_selection = list(self.tree.selection()) if hasattr(self, "tree") else []
         self.tree.delete(*self.tree.get_children())
-        for i, _ in enumerate(self.settings.tasks):
+
+        query = self.var_task_filter.get().strip().lower() if hasattr(self, "var_task_filter") else ""
+        for i, task in enumerate(self.settings.tasks):
+            haystack = " ".join([
+                task.notes,
+                task.uproject,
+                task.level,
+                task.sequence,
+                task.preset,
+                task.output_dir,
+            ]).lower()
+            if query and query not in haystack:
+                continue
             self.tree.insert("", "end", iid=str(i), values=self._row_values(i))
+
+        visible_selection = [iid for iid in previous_selection if self.tree.exists(iid)]
+        if visible_selection:
+            self.tree.selection_set(visible_selection)
+            self.tree.focus(visible_selection[0])
+
+        self._update_inspector()
+        self._update_command_preview()
+        self._update_status_summary()
 
     def _selected_indices(self) -> List[int]:
         return [int(iid) for iid in self.tree.selection()]
@@ -543,7 +1036,7 @@ class MRQLauncher(tk.Tk):
         for idx in sorted(sel, reverse=True):
             src = self.settings.tasks[idx]
             self.settings.tasks.insert(idx + 1, RenderTask(**asdict(src)))
-            self.state.insert(idx + 1, {"status": "—", "progress": None, "start": None, "end": None})
+            self.state.insert(idx + 1, default_task_state())
         self.refresh_tree()
 
     def remove_task(self):
@@ -629,8 +1122,10 @@ class MRQLauncher(tk.Tk):
         self.var_nts.set(self.settings.no_texture_streaming)
         self.var_extra.set(self.settings.extra_cli)
         self.settings.tasks = [RenderTask(**{**it, **({"enabled": True} if "enabled" not in it else {})}) for it in data.get("tasks", [])]
-        self.state = [{"status": "—", "progress": None, "start": None, "end": None} for _ in self.settings.tasks]
+        self.state = [default_task_state() for _ in self.settings.tasks]
         self.refresh_tree()
+        self._update_engine_labels()
+        self._update_command_preview()
 
     def save_to_json(self, path: str):
         data = {
@@ -670,13 +1165,13 @@ class MRQLauncher(tk.Tk):
                     data = json.load(f)
                 if isinstance(data, dict) and all(k in data for k in ("uproject","level","sequence","preset")):
                     self.settings.tasks.append(RenderTask(**{**data, **({"enabled": True} if "enabled" not in data else {})}))
-                    self.state.append({"status": "—", "progress": None, "start": None, "end": None})
+                    self.state.append(default_task_state())
                     loaded += 1
                 elif isinstance(data, dict) and "tasks" in data:
                     for it in data.get("tasks", []):
                         if all(k in it for k in ("uproject","level","sequence","preset")):
                             self.settings.tasks.append(RenderTask(**{**it, **({"enabled": True} if "enabled" not in it else {})}))
-                            self.state.append({"status": "—", "progress": None, "start": None, "end": None})
+                            self.state.append(default_task_state())
                             loaded += 1
             except Exception as e:
                 messagebox.showerror("Load Task", f"{os.path.basename(p)}: {e}")
@@ -1214,6 +1709,7 @@ class MRQLauncher(tk.Tk):
         self.log_queue.put(msg)
 
     def _drain_queues(self):
+        status_changed = False
         try:
             while True:
                 msg = self.log_queue.get_nowait()
@@ -1234,12 +1730,19 @@ class MRQLauncher(tk.Tk):
                         self.state[idx]["status"] = text
                         if self.tree.exists(str(idx)):
                             self.tree.item(str(idx), values=self._row_values(idx))
+                        status_changed = True
                 elif kind == "update_row":
                     _, idx = item
                     if self.tree.exists(str(idx)):
                         self.tree.item(str(idx), values=self._row_values(idx))
+                    status_changed = True
         except queue.Empty:
             pass
+
+        if status_changed:
+            self._update_inspector()
+            self._update_command_preview()
+            self._update_status_summary()
 
         self.after(50, self._drain_queues)
 
@@ -1248,6 +1751,8 @@ class MRQLauncher(tk.Tk):
                                        filetypes=[("UnrealEditor-Cmd", "UnrealEditor-Cmd.exe"), ("Exe", "*.exe"), ("All", "*.*")])
         if p:
             self.var_ue.set(p)
+            self._update_engine_labels()
+            self._update_command_preview()
 
     # ---- Session total time helpers ----
     def _compute_session_total_seconds(self) -> int:
@@ -1291,7 +1796,7 @@ class MRQLauncher(tk.Tk):
         self._ensure_state()
         for idx in sel:
             if 0 <= idx < len(self.state):
-                self.state[idx] = {"status": "—", "progress": None, "start": None, "end": None}
+                self.state[idx] = default_task_state()
                 self._update_row_async(idx)
         self._log(f"[Status] Cleared status for {len(sel)} task(s).")
 
