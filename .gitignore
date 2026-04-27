@@ -3,3 +3,4 @@
 /code/dist
 code/build_log.txt
 code/MRQLauncherCLI.spec
+/code/.venv
