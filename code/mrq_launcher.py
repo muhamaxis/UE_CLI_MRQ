@@ -1065,6 +1065,8 @@ class MRQLauncher(tk.Tk):
                     self._log("[Cancel] Stop-all while processing queue")
                     break
 
+            if self.stop_all:
+                self._clear_pending_runtime_queue("Cancelled (queue)")
             self._log("== Queue complete ==")
             self._current_global_idx = None
             self.worker_running = False
@@ -1095,6 +1097,7 @@ class MRQLauncher(tk.Tk):
     def cancel_all(self):
         self.stop_all = True
         self.cancel_current()
+        self._clear_pending_runtime_queue("Cancelled (queue)")
         self._log("[Cancel] Stop-all requested.")
 
     def _enqueue_tasks(self, tasks: List[RenderTask], mark_queued: bool = True, log_prefix: str = "[+] Added "):
@@ -1116,6 +1119,24 @@ class MRQLauncher(tk.Tk):
             self._log(f"{log_prefix}{count} task(s) to queue")
             # Ensure table reflects status changes
             self.refresh_tree()
+
+    def _clear_pending_runtime_queue(self, status_text: str = "Cancelled (queue)"):
+        """
+        Remove tasks waiting in runtime_q and optionally update their visible status.
+        This prevents stale queued tasks from running during the next render session.
+        """
+        removed = 0
+        while True:
+            try:
+                t = self.runtime_q.get_nowait()
+            except queue.Empty:
+                break
+            gi = self._find_task_index_by_identity(t)
+            if gi is not None:
+                self._set_status_async(gi, status_text)
+            removed += 1
+        if removed:
+            self._log(f"[Cancel] Removed {removed} queued task(s).")
 
     def enqueue_selected_or_enabled(self):
         """
