@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.9.7"
+APP_VERSION = "1.9.8"
 
 UI_THEME = {
     "bg": "#111318",
@@ -3264,15 +3264,25 @@ def run_qt_shell() -> int:
             painter.fillRect(option.rect, row_bg)
 
             if text:
-                size = min(option.rect.height() - 10, 26)
-                width = max(size, min(option.rect.width() - 14, 18 + len(text) * 8))
+                size = max(22, min(option.rect.height() - 10, 28))
+                width = size if len(text) <= 2 else min(option.rect.width() - 14, size + (len(text) - 2) * 7)
                 x = option.rect.x() + max(7, (option.rect.width() - width) // 2)
                 y = option.rect.y() + max(5, (option.rect.height() - size) // 2)
                 rect = option.rect.__class__(x, y, width, size)
+                shadow_rect = option.rect.__class__(x, y + 2, width, size)
 
-                painter.setPen(QPen(QColor("#F08A2A"), 1))
-                painter.setBrush(QBrush(QColor("#C76A1D")))
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(QBrush(QColor(0, 0, 0, 70)))
+                painter.drawRoundedRect(shadow_rect, 6, 6)
+
+                painter.setPen(QPen(QColor("#FFB15A"), 1))
+                painter.setBrush(QBrush(QColor("#E8791A")))
                 painter.drawRoundedRect(rect, 6, 6)
+
+                inner = rect.adjusted(2, 2, -2, -2)
+                painter.setPen(QPen(QColor("#F08A2A"), 1))
+                painter.setBrush(QBrush(QColor("#C75F12")))
+                painter.drawRoundedRect(inner, 4, 4)
 
                 font = QFont(option.font)
                 font.setBold(True)
@@ -4628,24 +4638,35 @@ def run_qt_shell() -> int:
 
         def toggle_task_indices(self, indices: List[int]) -> None:
             """Toggle selected tasks between Disabled and Ready with session queue order."""
+            unique_indices = [idx for idx in sorted(set(indices)) if 0 <= idx < len(self.settings.tasks)]
+            if not unique_indices:
+                return
+
             disabled_tasks = []
+            enabled_count = 0
+            disabled_count = 0
             changed = False
             self._ensure_state()
-            for idx in sorted(set(indices)):
-                if not (0 <= idx < len(self.settings.tasks)):
-                    continue
+
+            for idx in unique_indices:
                 state = self.state[idx] if idx < len(self.state) else default_task_state()
                 if state.get("status", "Ready").startswith(TaskRuntimeStatus.RENDERING):
                     continue
 
                 task = self.settings.tasks[idx]
-                if task.enabled:
+                task_id = id(task)
+                has_order = task_id in self.queue_order_by_task_id
+                is_active = bool(task.enabled) or has_order
+
+                if is_active:
                     task.enabled = False
-                    self._remove_order_from_task(task)
+                    self.queue_order_by_task_id.pop(task_id, None)
                     disabled_tasks.append(task)
+                    disabled_count += 1
                 else:
                     task.enabled = True
-                    self._assign_order_to_task(task)
+                    self.queue_order_by_task_id[task_id] = self._next_queue_order()
+                    enabled_count += 1
 
                 self.state[idx] = default_task_state()
                 changed = True
@@ -4655,7 +4676,7 @@ def run_qt_shell() -> int:
             if changed:
                 self._compact_queue_order()
                 self.refresh_queue_view()
-                self._append_log(f"[Qt] Toggled {len(set(indices))} task(s).")
+                self._append_log(f"[Qt] Toggle selected: enabled {enabled_count}, disabled {disabled_count} task(s).")
 
         def toggle_selected(self) -> None:
             self.toggle_task_indices(self.selected_indices())
