@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.9.3"
+APP_VERSION = "1.9.4"
 
 UI_THEME = {
     "bg": "#111318",
@@ -3784,6 +3784,7 @@ def run_qt_shell() -> int:
                 ("Move Up", lambda: self.move_selected(-1)),
                 ("Move Down", lambda: self.move_selected(1)),
                 ("Toggle", self.toggle_selected),
+                ("Toggle All", self.toggle_all_ready_disabled),
             ):
                 button = self._mark_button(QPushButton(text))
                 button.clicked.connect(callback)
@@ -3847,6 +3848,7 @@ def run_qt_shell() -> int:
             selected_count = len(self.selected_indices())
             has_selection = selected_count > 0
             can_move_single = selected_count == 1
+            has_tasks = bool(self.settings.tasks)
 
             menu = QMenu(self.table)
             self._add_context_action(menu, "Add Task", self.add_task_dialog)
@@ -3856,6 +3858,8 @@ def run_qt_shell() -> int:
             menu.addSeparator()
             self._add_context_action(menu, "Move Up", lambda: self.move_selected(-1), can_move_single)
             self._add_context_action(menu, "Move Down", lambda: self.move_selected(1), can_move_single)
+            self._add_context_action(menu, "Toggle Selection", self.toggle_selected, has_selection)
+            self._add_context_action(menu, "Toggle All Ready/Disabled", self.toggle_all_ready_disabled, has_tasks)
             menu.addSeparator()
             section = menu.addAction("Task Save/Load")
             section.setEnabled(False)
@@ -4473,6 +4477,9 @@ def run_qt_shell() -> int:
         def toggle_selected(self) -> None:
             disabled_tasks = []
             for idx in self.selected_indices():
+                state = self.state[idx] if idx < len(self.state) else default_task_state()
+                if state.get("status", "Ready").startswith(TaskRuntimeStatus.RENDERING):
+                    continue
                 task = self.settings.tasks[idx]
                 task.enabled = not task.enabled
                 self.state[idx] = default_task_state()
@@ -4481,6 +4488,35 @@ def run_qt_shell() -> int:
             if disabled_tasks:
                 self.runtime_queue.remove_tasks(disabled_tasks)
             self.refresh_queue_view()
+
+        def toggle_all_ready_disabled(self) -> None:
+            """Toggle every non-rendering task between Ready and Disabled."""
+            if not self.settings.tasks:
+                return
+
+            self._ensure_state()
+            toggleable_indices = [
+                idx for idx, state in enumerate(self.state)
+                if not state.get("status", "Ready").startswith(TaskRuntimeStatus.RENDERING)
+            ]
+            if not toggleable_indices:
+                self._append_log("[Qt] Toggle All skipped: all tasks are currently rendering.")
+                return
+
+            enable_all = any(not self.settings.tasks[idx].enabled for idx in toggleable_indices)
+            disabled_tasks = []
+            for idx in toggleable_indices:
+                task = self.settings.tasks[idx]
+                task.enabled = enable_all
+                self.state[idx] = default_task_state()
+                if not enable_all:
+                    disabled_tasks.append(task)
+
+            if disabled_tasks:
+                self.runtime_queue.remove_tasks(disabled_tasks)
+            self.refresh_queue_view()
+            target = "Ready" if enable_all else "Disabled"
+            self._append_log(f"[Qt] Set {len(toggleable_indices)} task(s) to {target}.")
 
         def render_selected(self) -> None:
             tasks = self._collect(only_selected=True)
