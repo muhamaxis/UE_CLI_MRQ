@@ -6,3 +6,4 @@ code/MRQLauncherCLI.spec
 /code/.venv
 code/build_qt_log.txt
 code/MRQLauncherQT.spec
+resources/src/
