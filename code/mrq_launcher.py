@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.8.5"
+APP_VERSION = "1.8.7"
 
 UI_THEME = {
     "bg": "#111318",
@@ -2996,6 +2996,10 @@ def run_qt_shell() -> int:
                 border: 1px solid {apple['border_soft']};
                 border-radius: 12px;
             }}
+            QFrame#CommandSettingsBody {{
+                background: transparent;
+                border: none;
+            }}
             QLabel {{
                 background: transparent;
                 border: none;
@@ -3057,6 +3061,20 @@ def run_qt_shell() -> int:
                 border-color: transparent;
                 color: {apple['muted']};
             }}
+            QPushButton#DisclosureButton {{
+                min-width: 34px;
+                max-width: 34px;
+                min-height: 34px;
+                max-height: 34px;
+                padding: 0px;
+                border-radius: 10px;
+                font-weight: 800;
+            }}
+            QLabel#CommandSummary {{
+                color: {apple['text']};
+                font-size: 10pt;
+                padding-top: 3px;
+            }}
             QLineEdit, QTextEdit, QSpinBox, QComboBox {{
                 background-color: {apple['field']};
                 color: {apple['text']};
@@ -3066,6 +3084,10 @@ def run_qt_shell() -> int:
             }}
             QLineEdit:focus, QTextEdit:focus, QSpinBox:focus, QComboBox:focus {{
                 border-color: {apple['accent']};
+            }}
+            QSpinBox::up-button, QSpinBox::down-button {{
+                width: 0px;
+                border: none;
             }}
             QLineEdit::placeholder {{
                 color: {apple['muted2']};
@@ -3273,6 +3295,7 @@ def run_qt_shell() -> int:
             self.no_texture_streaming_check = None
             self.auto_minimal_check = None
             self.extra_cli_edit = None
+            self.command_settings_panel = None
             self.command_settings_body = None
             self.command_settings_toggle = None
             self.command_settings_summary = None
@@ -3411,9 +3434,11 @@ def run_qt_shell() -> int:
         def _build_render_options_panel(self, parent_layout: QVBoxLayout) -> None:
             options_panel = QFrame(self)
             options_panel.setObjectName("OptionStrip")
+            self.command_settings_panel = options_panel
+            options_panel.setMinimumHeight(224)
             options_shell = QVBoxLayout(options_panel)
-            options_shell.setContentsMargins(12, 10, 12, 12)
-            options_shell.setSpacing(10)
+            options_shell.setContentsMargins(14, 12, 14, 14)
+            options_shell.setSpacing(12)
 
             title_row = QHBoxLayout()
             title_row.setSpacing(10)
@@ -3431,11 +3456,15 @@ def run_qt_shell() -> int:
             title_row.addLayout(title_col, 1)
             options_shell.addLayout(title_row)
 
-            self.command_settings_body = QWidget(options_panel)
+            self.command_settings_body = QFrame(options_panel)
+            self.command_settings_body.setObjectName("CommandSettingsBody")
+            self.command_settings_body.setMinimumHeight(142)
             options_layout = QGridLayout(self.command_settings_body)
             options_layout.setContentsMargins(0, 0, 0, 0)
-            options_layout.setHorizontalSpacing(12)
-            options_layout.setVerticalSpacing(10)
+            options_layout.setHorizontalSpacing(14)
+            options_layout.setVerticalSpacing(12)
+            for row in range(4):
+                options_layout.setRowMinimumHeight(row, 34)
 
             self.ue_path_edit = QLineEdit(self.settings.ue_cmd, self.command_settings_body)
             self.ue_path_edit.textChanged.connect(self._on_ue_path_changed)
@@ -3458,6 +3487,20 @@ def run_qt_shell() -> int:
             self.auto_minimal_check = QCheckBox("Auto minimal on render", options_panel)
             self.extra_cli_edit = QLineEdit(options_panel)
             self.extra_cli_edit.setPlaceholderText("Additional Unreal command-line arguments")
+
+            for control in (
+                self.ue_path_edit,
+                browse_button,
+                self.retries_spin,
+                self.fail_policy_combo,
+                self.kill_timeout_spin,
+                self.resx_spin,
+                self.resy_spin,
+                self.extra_cli_edit,
+            ):
+                control.setMinimumHeight(32)
+            for spin in (self.retries_spin, self.kill_timeout_spin, self.resx_spin, self.resy_spin):
+                spin.setButtonSymbols(QSpinBox.NoButtons)
 
             options_layout.addWidget(QLabel("UnrealEditor-Cmd.exe"), 0, 0)
             options_layout.addWidget(self.ue_path_edit, 0, 1, 1, 5)
@@ -3494,9 +3537,18 @@ def run_qt_shell() -> int:
         def _apply_command_settings_collapsed_state(self) -> None:
             if self.command_settings_body:
                 self.command_settings_body.setVisible(self.command_settings_expanded)
+            if self.command_settings_panel:
+                if self.command_settings_expanded:
+                    self.command_settings_panel.setMinimumHeight(224)
+                    self.command_settings_panel.setMaximumHeight(16777215)
+                else:
+                    self.command_settings_panel.setMinimumHeight(72)
+                    self.command_settings_panel.setMaximumHeight(82)
             if self.command_settings_toggle:
                 self.command_settings_toggle.setText("▾" if self.command_settings_expanded else "▸")
             self._update_command_settings_summary()
+            if self.command_settings_panel:
+                self.command_settings_panel.updateGeometry()
 
         def _update_command_settings_summary(self) -> None:
             if not self.command_settings_summary:
