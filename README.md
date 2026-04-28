@@ -84,15 +84,19 @@ The actual render result still depends on your Unreal project, MRQ preset, plugi
 
 1. Download or clone this repository.
 2. Open the project folder.
-3. Run the launcher using the provided batch file.
+3. Run the Qt launcher using the provided batch file.
 
-For the classic launcher:
+For the Qt shell:
 
 ```bat
 mrq_launcherQt.bat
 ```
 
-For the Qt shell, use the Qt run/build script provided by the project if available.
+For the classic Tkinter launcher, use the classic batch file if it is included in your checkout:
+
+```bat
+mrq_launcher.bat
+```
 
 ---
 
@@ -143,6 +147,57 @@ mrq_logs/
 ```
 
 The launcher can open the logs folder and the latest log for the selected job directly from the UI.
+
+---
+
+## Building the Qt EXE
+
+The repository includes `buildQt_exe.bat` for building a standalone Windows executable from the Qt shell.
+
+### Build requirements
+
+- Windows
+- Python 3.9+ available from `python` in Command Prompt
+- Internet access for the first build, so `pip` can install build dependencies
+- Project resources present in the repository:
+  - `resources/app_icon.ico`
+  - `resources/mrq_launcher_logo_167.png`
+
+The build script creates or reuses a local `.venv`, installs PyInstaller and PySide6, embeds the application icon and header logo, and builds both OneDir and OneFile outputs.
+
+### How to build
+
+From the repository root, run:
+
+```bat
+buildQt_exe.bat
+```
+
+The script also supports being run from the `code/` folder layout, as long as the expected project files and resources exist.
+
+### Build outputs
+
+Successful builds are written to:
+
+```text
+dist/MRQLauncherQT/MRQLauncherQT.exe
+dist/MRQLauncherQT.exe
+```
+
+- `dist/MRQLauncherQT/MRQLauncherQT.exe` is the OneDir build. It is usually the safest option to distribute together with its generated folder.
+- `dist/MRQLauncherQT.exe` is the OneFile build. It is easier to copy, but startup can be slower because PyInstaller extracts bundled files at launch.
+
+If the OneFile build fails but OneDir succeeds, the OneDir EXE is still ready to use.
+
+### Troubleshooting
+
+If the build fails, check:
+
+```text
+build_qt_log.txt
+```
+
+The batch file prints the last build log lines automatically. If you report a build problem, include `build_qt_log.txt`.
 
 ---
 
