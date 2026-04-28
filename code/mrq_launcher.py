@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.8.2"
+APP_VERSION = "1.8.3"
 
 UI_THEME = {
     "bg": "#111318",
@@ -2919,6 +2919,7 @@ def run_qt_shell() -> int:
     """Launch the PySide6 queue workspace without replacing the Tkinter launcher."""
     try:
         from PySide6.QtCore import Qt, QTimer
+        from PySide6.QtGui import QColor, QBrush, QPalette
         from PySide6.QtWidgets import (
             QApplication, QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
             QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QProgressBar,
@@ -2928,6 +2929,116 @@ def run_qt_shell() -> int:
         print("PySide6 is required for the Qt shell. Install it with: pip install PySide6")
         print(f"Import error: {exc}")
         return 1
+
+    def apply_qt_dark_theme(app: QApplication) -> None:
+        """Apply the shared dark launcher palette to the Qt shell."""
+        try:
+            app.setStyle("Fusion")
+        except Exception:
+            pass
+
+        palette = QPalette()
+        palette.setColor(QPalette.Window, QColor(UI_THEME["bg"]))
+        palette.setColor(QPalette.WindowText, QColor(UI_THEME["text"]))
+        palette.setColor(QPalette.Base, QColor(UI_THEME["entry"]))
+        palette.setColor(QPalette.AlternateBase, QColor(UI_THEME["panel_alt"]))
+        palette.setColor(QPalette.ToolTipBase, QColor(UI_THEME["panel_soft"]))
+        palette.setColor(QPalette.ToolTipText, QColor(UI_THEME["text"]))
+        palette.setColor(QPalette.Text, QColor(UI_THEME["text"]))
+        palette.setColor(QPalette.Button, QColor(UI_THEME["panel_soft"]))
+        palette.setColor(QPalette.ButtonText, QColor(UI_THEME["text"]))
+        palette.setColor(QPalette.BrightText, QColor("#FFFFFF"))
+        palette.setColor(QPalette.Highlight, QColor(UI_THEME["accent_soft"]))
+        palette.setColor(QPalette.HighlightedText, QColor("#FFFFFF"))
+        palette.setColor(QPalette.Disabled, QPalette.Text, QColor(UI_THEME["muted"]))
+        palette.setColor(QPalette.Disabled, QPalette.ButtonText, QColor(UI_THEME["muted"]))
+        app.setPalette(palette)
+
+        app.setStyleSheet(f"""
+            QWidget {{
+                background-color: {UI_THEME['bg']};
+                color: {UI_THEME['text']};
+                selection-background-color: {UI_THEME['accent_soft']};
+                selection-color: #FFFFFF;
+            }}
+            QFrame {{
+                background-color: {UI_THEME['panel']};
+                border: 1px solid {UI_THEME['border']};
+                border-radius: 6px;
+            }}
+            QLabel {{
+                background: transparent;
+                border: none;
+            }}
+            QPushButton {{
+                background-color: {UI_THEME['panel_soft']};
+                color: {UI_THEME['text']};
+                border: 1px solid {UI_THEME['border']};
+                border-radius: 5px;
+                padding: 6px 10px;
+            }}
+            QPushButton:hover {{
+                background-color: {UI_THEME['accent_soft']};
+                border-color: {UI_THEME['accent']};
+            }}
+            QPushButton:pressed {{
+                background-color: {UI_THEME['accent']};
+                color: #FFFFFF;
+            }}
+            QLineEdit, QTextEdit, QSpinBox, QComboBox {{
+                background-color: {UI_THEME['entry']};
+                color: {UI_THEME['text']};
+                border: 1px solid {UI_THEME['border']};
+                border-radius: 4px;
+                padding: 4px;
+            }}
+            QLineEdit:focus, QTextEdit:focus, QSpinBox:focus, QComboBox:focus {{
+                border-color: {UI_THEME['accent']};
+            }}
+            QCheckBox {{
+                background: transparent;
+                border: none;
+                spacing: 6px;
+            }}
+            QTableWidget {{
+                background-color: {UI_THEME['panel']};
+                alternate-background-color: {UI_THEME['panel_alt']};
+                color: {UI_THEME['text']};
+                gridline-color: {UI_THEME['border']};
+                border: 1px solid {UI_THEME['border']};
+                border-radius: 6px;
+            }}
+            QHeaderView::section {{
+                background-color: {UI_THEME['panel_soft']};
+                color: {UI_THEME['text']};
+                border: 1px solid {UI_THEME['border']};
+                padding: 6px;
+                font-weight: 700;
+            }}
+            QTableWidget::item {{
+                padding: 4px;
+            }}
+            QTableWidget::item:selected {{
+                background-color: {UI_THEME['accent_soft']};
+                color: #FFFFFF;
+            }}
+            QProgressBar {{
+                background-color: {UI_THEME['entry']};
+                color: {UI_THEME['text']};
+                border: 1px solid {UI_THEME['border']};
+                border-radius: 4px;
+                text-align: center;
+            }}
+            QProgressBar::chunk {{
+                background-color: {UI_THEME['accent']};
+                border-radius: 3px;
+            }}
+            QStatusBar {{
+                background-color: {UI_THEME['panel_alt']};
+                color: {UI_THEME['muted']};
+                border-top: 1px solid {UI_THEME['border']};
+            }}
+        """)
 
     class QtTaskEditor(QDialog):
         """Qt editor for one render task."""
@@ -3110,6 +3221,31 @@ def run_qt_shell() -> int:
             panel = QFrame(self)
             panel.setFrameShape(QFrame.StyledPanel)
             return panel
+
+        def _status_colors_for_task(self, task: RenderTask, state: dict) -> tuple[str, str, str]:
+            """Return row/status colors matching the existing launcher status palette."""
+            kind = get_status_kind(state.get("status", TaskRuntimeStatus.READY), task.enabled)
+            palette = STATUS_PILL_THEME.get(kind, STATUS_PILL_THEME["ready"])
+            return palette["bg"], palette["text"], palette["border"]
+
+        def _apply_status_item_style(self, item: QTableWidgetItem, task: RenderTask, state: dict, column: int) -> None:
+            """Apply compact dark status styling without changing runtime state."""
+            bg, fg, _border = self._status_colors_for_task(task, state)
+            if column == 0:
+                item.setBackground(QBrush(QColor(bg)))
+                item.setForeground(QBrush(QColor(fg)))
+                font = item.font()
+                font.setBold(True)
+                item.setFont(font)
+                item.setTextAlignment(Qt.AlignCenter)
+            else:
+                if not task.enabled:
+                    item.setForeground(QBrush(QColor(UI_THEME["muted"])))
+                elif state.get("status", "").startswith(TaskRuntimeStatus.RENDERING):
+                    item.setForeground(QBrush(QColor("#A8C9FF")))
+                else:
+                    item.setForeground(QBrush(QColor(UI_THEME["text"])))
+            item.setData(Qt.UserRole + 1, bg)
 
         def _build_header(self) -> QFrame:
             panel = self._panel()
@@ -3345,6 +3481,9 @@ def run_qt_shell() -> int:
             layout.addWidget(self.queue_toolbar_panel)
             self.table = QTableWidget(0, len(self.COLUMNS), panel)
             self.table.setHorizontalHeaderLabels(list(self.COLUMNS))
+            self.table.setAlternatingRowColors(True)
+            self.table.verticalHeader().setVisible(False)
+            self.table.setShowGrid(False)
             self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
             self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
             self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -3558,6 +3697,7 @@ def run_qt_shell() -> int:
                 for column, value in enumerate(values):
                     item = QTableWidgetItem(value)
                     item.setData(Qt.UserRole, task_index)
+                    self._apply_status_item_style(item, task, state, column)
                     self.table.setItem(row, column, item)
             self.table.resizeColumnsToContents()
             for row, task_index in enumerate(visible_indices):
@@ -4269,6 +4409,7 @@ def run_qt_shell() -> int:
             return None
 
     app = QApplication.instance() or QApplication(sys.argv)
+    apply_qt_dark_theme(app)
     window = QtMRQShell()
     window.show()
     return app.exec()
