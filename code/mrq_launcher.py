@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.8.4"
+APP_VERSION = "1.8.5"
 
 UI_THEME = {
     "bg": "#111318",
@@ -3273,6 +3273,10 @@ def run_qt_shell() -> int:
             self.no_texture_streaming_check = None
             self.auto_minimal_check = None
             self.extra_cli_edit = None
+            self.command_settings_body = None
+            self.command_settings_toggle = None
+            self.command_settings_summary = None
+            self.command_settings_expanded = True
             self.command_preview = None
             self.log_view = None
             self.progress_bar = None
@@ -3401,25 +3405,42 @@ def run_qt_shell() -> int:
             top_row.addWidget(minimal_button)
             layout.addLayout(top_row)
 
-            path_row = QHBoxLayout()
-            path_row.addWidget(QLabel("UnrealEditor-Cmd.exe"))
-            self.ue_path_edit = QLineEdit(self.settings.ue_cmd)
-            self.ue_path_edit.textChanged.connect(self._on_ue_path_changed)
-            path_row.addWidget(self.ue_path_edit, 1)
-            browse_button = self._mark_button(QPushButton("Browse"))
-            browse_button.clicked.connect(self.browse_unreal_cmd)
-            path_row.addWidget(browse_button)
-            layout.addLayout(path_row)
             self._build_render_options_panel(layout)
             return panel
 
         def _build_render_options_panel(self, parent_layout: QVBoxLayout) -> None:
             options_panel = QFrame(self)
             options_panel.setObjectName("OptionStrip")
-            options_layout = QGridLayout(options_panel)
-            options_layout.setContentsMargins(12, 12, 12, 12)
+            options_shell = QVBoxLayout(options_panel)
+            options_shell.setContentsMargins(12, 10, 12, 12)
+            options_shell.setSpacing(10)
+
+            title_row = QHBoxLayout()
+            title_row.setSpacing(10)
+            self.command_settings_toggle = QPushButton("▾", options_panel)
+            self.command_settings_toggle.setObjectName("DisclosureButton")
+            self.command_settings_toggle.clicked.connect(self._toggle_command_settings_panel)
+            title_row.addWidget(self.command_settings_toggle)
+
+            title_col = QVBoxLayout()
+            title_col.setSpacing(0)
+            title_col.addWidget(self._section_label("Command Settings"))
+            self.command_settings_summary = QLabel(options_panel)
+            self.command_settings_summary.setObjectName("CommandSummary")
+            title_col.addWidget(self.command_settings_summary)
+            title_row.addLayout(title_col, 1)
+            options_shell.addLayout(title_row)
+
+            self.command_settings_body = QWidget(options_panel)
+            options_layout = QGridLayout(self.command_settings_body)
+            options_layout.setContentsMargins(0, 0, 0, 0)
             options_layout.setHorizontalSpacing(12)
             options_layout.setVerticalSpacing(10)
+
+            self.ue_path_edit = QLineEdit(self.settings.ue_cmd, self.command_settings_body)
+            self.ue_path_edit.textChanged.connect(self._on_ue_path_changed)
+            browse_button = self._mark_button(QPushButton("Browse", self.command_settings_body))
+            browse_button.clicked.connect(self.browse_unreal_cmd)
 
             self.retries_spin = QSpinBox(options_panel)
             self.retries_spin.setRange(0, 3)
@@ -3438,27 +3459,55 @@ def run_qt_shell() -> int:
             self.extra_cli_edit = QLineEdit(options_panel)
             self.extra_cli_edit.setPlaceholderText("Additional Unreal command-line arguments")
 
-            options_layout.addWidget(QLabel("Retries"), 0, 0)
-            options_layout.addWidget(self.retries_spin, 0, 1)
-            options_layout.addWidget(QLabel("On fail"), 0, 2)
-            options_layout.addWidget(self.fail_policy_combo, 0, 3)
-            options_layout.addWidget(QLabel("Kill timeout"), 0, 4)
-            options_layout.addWidget(self.kill_timeout_spin, 0, 5)
-            options_layout.addWidget(self.windowed_check, 0, 6)
+            options_layout.addWidget(QLabel("UnrealEditor-Cmd.exe"), 0, 0)
+            options_layout.addWidget(self.ue_path_edit, 0, 1, 1, 5)
+            options_layout.addWidget(browse_button, 0, 6)
 
-            options_layout.addWidget(QLabel("ResX"), 1, 0)
-            options_layout.addWidget(self.resx_spin, 1, 1)
-            options_layout.addWidget(QLabel("ResY"), 1, 2)
-            options_layout.addWidget(self.resy_spin, 1, 3)
-            options_layout.addWidget(self.no_texture_streaming_check, 1, 4, 1, 2)
-            options_layout.addWidget(self.auto_minimal_check, 1, 6)
+            options_layout.addWidget(QLabel("Retries"), 1, 0)
+            options_layout.addWidget(self.retries_spin, 1, 1)
+            options_layout.addWidget(QLabel("On fail"), 1, 2)
+            options_layout.addWidget(self.fail_policy_combo, 1, 3)
+            options_layout.addWidget(QLabel("Kill timeout"), 1, 4)
+            options_layout.addWidget(self.kill_timeout_spin, 1, 5)
+            options_layout.addWidget(self.windowed_check, 1, 6)
 
-            options_layout.addWidget(QLabel("Extra CLI"), 2, 0)
-            options_layout.addWidget(self.extra_cli_edit, 2, 1, 1, 6)
+            options_layout.addWidget(QLabel("ResX"), 2, 0)
+            options_layout.addWidget(self.resx_spin, 2, 1)
+            options_layout.addWidget(QLabel("ResY"), 2, 2)
+            options_layout.addWidget(self.resy_spin, 2, 3)
+            options_layout.addWidget(self.no_texture_streaming_check, 2, 4, 1, 2)
+            options_layout.addWidget(self.auto_minimal_check, 2, 6)
+
+            options_layout.addWidget(QLabel("Extra CLI"), 3, 0)
+            options_layout.addWidget(self.extra_cli_edit, 3, 1, 1, 6)
+            options_shell.addWidget(self.command_settings_body)
             parent_layout.addWidget(options_panel)
 
             self._apply_settings_to_option_controls()
+            self._apply_command_settings_collapsed_state()
             self._connect_option_control_signals()
+
+        def _toggle_command_settings_panel(self) -> None:
+            self.command_settings_expanded = not self.command_settings_expanded
+            self._apply_command_settings_collapsed_state()
+
+        def _apply_command_settings_collapsed_state(self) -> None:
+            if self.command_settings_body:
+                self.command_settings_body.setVisible(self.command_settings_expanded)
+            if self.command_settings_toggle:
+                self.command_settings_toggle.setText("▾" if self.command_settings_expanded else "▸")
+            self._update_command_settings_summary()
+
+        def _update_command_settings_summary(self) -> None:
+            if not self.command_settings_summary:
+                return
+            ue_name = os.path.basename(self.settings.ue_cmd) if self.settings.ue_cmd else "UnrealEditor-Cmd.exe not set"
+            window_mode = "Windowed" if self.settings.windowed else "Fullscreen"
+            nts = "NTS on" if self.settings.no_texture_streaming else "NTS off"
+            extra = " + Extra CLI" if (self.settings.extra_cli or "").strip() else ""
+            self.command_settings_summary.setText(
+                f"{ue_name}  •  {window_mode}  •  {self.settings.resx}×{self.settings.resy}  •  {self.settings.fail_policy}  •  {nts}{extra}"
+            )
 
         def _option_control_widgets(self) -> List[QWidget]:
             return [
@@ -3510,6 +3559,7 @@ def run_qt_shell() -> int:
                     widget.blockSignals(False)
                 if self.ue_path_edit:
                     self.ue_path_edit.blockSignals(ue_was_blocked)
+            self._update_command_settings_summary()
             self._update_command_preview()
 
         def _sync_option_controls_to_settings(self) -> None:
@@ -3533,6 +3583,7 @@ def run_qt_shell() -> int:
                 self.settings.auto_minimal_on_render = bool(self.auto_minimal_check.isChecked())
             if self.extra_cli_edit:
                 self.settings.extra_cli = self.extra_cli_edit.text().strip()
+            self._update_command_settings_summary()
 
         def _connect_option_control_signals(self) -> None:
             for spin in (self.retries_spin, self.kill_timeout_spin, self.resx_spin, self.resy_spin):
