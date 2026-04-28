@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.7.9"
+APP_VERSION = "1.8.0"
 
 UI_THEME = {
     "bg": "#111318",
@@ -2920,9 +2920,9 @@ def run_qt_shell() -> int:
     try:
         from PySide6.QtCore import Qt, QTimer
         from PySide6.QtWidgets import (
-            QApplication, QAbstractItemView, QDialog, QDialogButtonBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
+            QApplication, QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
             QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QProgressBar,
-            QStatusBar, QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
+            QSpinBox, QStatusBar, QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
         )
     except ImportError as exc:
         print("PySide6 is required for the Qt shell. Install it with: pip install PySide6")
@@ -3038,6 +3038,15 @@ def run_qt_shell() -> int:
             self.table = None
             self.filter_edit = None
             self.ue_path_edit = None
+            self.retries_spin = None
+            self.fail_policy_combo = None
+            self.kill_timeout_spin = None
+            self.windowed_check = None
+            self.resx_spin = None
+            self.resy_spin = None
+            self.no_texture_streaming_check = None
+            self.auto_minimal_check = None
+            self.extra_cli_edit = None
             self.command_preview = None
             self.log_view = None
             self.progress_bar = None
@@ -3135,7 +3144,153 @@ def run_qt_shell() -> int:
             browse_button.clicked.connect(self.browse_unreal_cmd)
             path_row.addWidget(browse_button)
             layout.addLayout(path_row)
+            self._build_render_options_panel(layout)
             return panel
+
+        def _build_render_options_panel(self, parent_layout: QVBoxLayout) -> None:
+            options_panel = QFrame(self)
+            options_layout = QGridLayout(options_panel)
+            options_layout.setContentsMargins(0, 0, 0, 0)
+            options_layout.setHorizontalSpacing(8)
+            options_layout.setVerticalSpacing(6)
+
+            self.retries_spin = QSpinBox(options_panel)
+            self.retries_spin.setRange(0, 3)
+            self.fail_policy_combo = QComboBox(options_panel)
+            self.fail_policy_combo.addItems(("retry_then_next", "skip_next", "stop_queue"))
+            self.kill_timeout_spin = QSpinBox(options_panel)
+            self.kill_timeout_spin.setRange(0, 3600)
+            self.kill_timeout_spin.setSuffix(" s")
+            self.windowed_check = QCheckBox("Windowed", options_panel)
+            self.resx_spin = QSpinBox(options_panel)
+            self.resx_spin.setRange(1, 32768)
+            self.resy_spin = QSpinBox(options_panel)
+            self.resy_spin.setRange(1, 32768)
+            self.no_texture_streaming_check = QCheckBox("No texture streaming", options_panel)
+            self.auto_minimal_check = QCheckBox("Auto minimal on render", options_panel)
+            self.extra_cli_edit = QLineEdit(options_panel)
+            self.extra_cli_edit.setPlaceholderText("Additional Unreal command-line arguments")
+
+            options_layout.addWidget(QLabel("Retries"), 0, 0)
+            options_layout.addWidget(self.retries_spin, 0, 1)
+            options_layout.addWidget(QLabel("On fail"), 0, 2)
+            options_layout.addWidget(self.fail_policy_combo, 0, 3)
+            options_layout.addWidget(QLabel("Kill timeout"), 0, 4)
+            options_layout.addWidget(self.kill_timeout_spin, 0, 5)
+            options_layout.addWidget(self.windowed_check, 0, 6)
+
+            options_layout.addWidget(QLabel("ResX"), 1, 0)
+            options_layout.addWidget(self.resx_spin, 1, 1)
+            options_layout.addWidget(QLabel("ResY"), 1, 2)
+            options_layout.addWidget(self.resy_spin, 1, 3)
+            options_layout.addWidget(self.no_texture_streaming_check, 1, 4, 1, 2)
+            options_layout.addWidget(self.auto_minimal_check, 1, 6)
+
+            options_layout.addWidget(QLabel("Extra CLI"), 2, 0)
+            options_layout.addWidget(self.extra_cli_edit, 2, 1, 1, 6)
+            parent_layout.addWidget(options_panel)
+
+            self._apply_settings_to_option_controls()
+            self._connect_option_control_signals()
+
+        def _option_control_widgets(self) -> List[QWidget]:
+            return [
+                widget for widget in (
+                    self.retries_spin,
+                    self.fail_policy_combo,
+                    self.kill_timeout_spin,
+                    self.windowed_check,
+                    self.resx_spin,
+                    self.resy_spin,
+                    self.no_texture_streaming_check,
+                    self.auto_minimal_check,
+                    self.extra_cli_edit,
+                )
+                if widget is not None
+            ]
+
+        def _apply_settings_to_option_controls(self) -> None:
+            widgets = self._option_control_widgets()
+            ue_was_blocked = False
+            if self.ue_path_edit:
+                ue_was_blocked = self.ue_path_edit.blockSignals(True)
+            for widget in widgets:
+                widget.blockSignals(True)
+            try:
+                if self.ue_path_edit:
+                    self.ue_path_edit.setText(self.settings.ue_cmd)
+                if self.retries_spin:
+                    self.retries_spin.setValue(int(self.settings.retries))
+                if self.fail_policy_combo:
+                    index = self.fail_policy_combo.findText(self.settings.fail_policy)
+                    self.fail_policy_combo.setCurrentIndex(index if index >= 0 else 0)
+                if self.kill_timeout_spin:
+                    self.kill_timeout_spin.setValue(int(self.settings.kill_timeout_s))
+                if self.windowed_check:
+                    self.windowed_check.setChecked(bool(self.settings.windowed))
+                if self.resx_spin:
+                    self.resx_spin.setValue(int(self.settings.resx))
+                if self.resy_spin:
+                    self.resy_spin.setValue(int(self.settings.resy))
+                if self.no_texture_streaming_check:
+                    self.no_texture_streaming_check.setChecked(bool(self.settings.no_texture_streaming))
+                if self.auto_minimal_check:
+                    self.auto_minimal_check.setChecked(bool(self.settings.auto_minimal_on_render))
+                if self.extra_cli_edit:
+                    self.extra_cli_edit.setText(self.settings.extra_cli)
+            finally:
+                for widget in widgets:
+                    widget.blockSignals(False)
+                if self.ue_path_edit:
+                    self.ue_path_edit.blockSignals(ue_was_blocked)
+            self._update_command_preview()
+
+        def _sync_option_controls_to_settings(self) -> None:
+            if self.ue_path_edit:
+                self.settings.ue_cmd = self.ue_path_edit.text().strip()
+            if self.retries_spin:
+                self.settings.retries = int(self.retries_spin.value())
+            if self.fail_policy_combo:
+                self.settings.fail_policy = self.fail_policy_combo.currentText()
+            if self.kill_timeout_spin:
+                self.settings.kill_timeout_s = int(self.kill_timeout_spin.value())
+            if self.windowed_check:
+                self.settings.windowed = bool(self.windowed_check.isChecked())
+            if self.resx_spin:
+                self.settings.resx = int(self.resx_spin.value())
+            if self.resy_spin:
+                self.settings.resy = int(self.resy_spin.value())
+            if self.no_texture_streaming_check:
+                self.settings.no_texture_streaming = bool(self.no_texture_streaming_check.isChecked())
+            if self.auto_minimal_check:
+                self.settings.auto_minimal_on_render = bool(self.auto_minimal_check.isChecked())
+            if self.extra_cli_edit:
+                self.settings.extra_cli = self.extra_cli_edit.text().strip()
+
+        def _connect_option_control_signals(self) -> None:
+            for spin in (self.retries_spin, self.kill_timeout_spin, self.resx_spin, self.resy_spin):
+                if spin:
+                    spin.valueChanged.connect(self._on_render_options_changed)
+            for check in (self.windowed_check, self.no_texture_streaming_check, self.auto_minimal_check):
+                if check:
+                    check.toggled.connect(self._on_render_options_changed)
+            if self.fail_policy_combo:
+                self.fail_policy_combo.currentTextChanged.connect(self._on_render_options_changed)
+            if self.extra_cli_edit:
+                self.extra_cli_edit.textChanged.connect(self._on_render_options_changed)
+
+        def _on_render_options_changed(self, *_args) -> None:
+            self._sync_option_controls_to_settings()
+            self._update_command_preview()
+
+        def _validate_current_render_options(self) -> bool:
+            self._sync_option_controls_to_settings()
+            try:
+                shlex.split(self.settings.extra_cli or "")
+            except ValueError as exc:
+                QMessageBox.critical(self, "Render Options", f"Invalid Extra CLI: {exc}")
+                return False
+            return True
 
         def _build_minimal_header(self) -> QFrame:
             panel = self._panel()
@@ -3519,7 +3674,10 @@ def run_qt_shell() -> int:
                     label.setText(value)
 
         def _build_command_preview_for_task(self, task: RenderTask) -> str:
-            return build_unreal_command_preview(self.settings, task)
+            try:
+                return build_unreal_command_preview(self.settings, task)
+            except ValueError as exc:
+                return f"Command preview error: invalid Extra CLI.\n{exc}"
 
         def _build_command_for_task(self, task: RenderTask) -> List[str]:
             return build_unreal_command(self.settings, task)
@@ -3527,8 +3685,14 @@ def run_qt_shell() -> int:
         def _update_command_preview(self) -> None:
             if not self.command_preview:
                 return
+            self._sync_option_controls_to_settings()
             task = self._selected_task()
-            self.command_preview.setPlainText(self._build_command_preview_for_task(task) if task else "Select a task to inspect the generated command line.")
+            if task is None and self._current_global_idx is not None and 0 <= self._current_global_idx < len(self.settings.tasks):
+                task = self.settings.tasks[self._current_global_idx]
+            self.command_preview.setPlainText(
+                self._build_command_preview_for_task(task)
+                if task else "Select a task to inspect the generated command line."
+            )
 
         def _update_status_bar(self) -> None:
             queued = sum(1 for state in self.state if state.get("status") == TaskRuntimeStatus.QUEUED)
@@ -3593,8 +3757,7 @@ def run_qt_shell() -> int:
             for key, value in config.items():
                 if hasattr(self.settings, key):
                     setattr(self.settings, key, value)
-            if self.ue_path_edit:
-                self.ue_path_edit.setText(self.settings.ue_cmd)
+            self._apply_settings_to_option_controls()
             self.settings.tasks = tasks
             self.state = [default_task_state() for _ in self.settings.tasks]
             self.runtime_queue.clear_pending(TaskRuntimeStatus.CANCELLED_QUEUE)
@@ -3607,6 +3770,7 @@ def run_qt_shell() -> int:
                 return
             if not path.lower().endswith(".json"):
                 path += ".json"
+            self._sync_option_controls_to_settings()
             config = {key: getattr(self.settings, key) for key in PersistenceRepository.QUEUE_CONFIG_FIELDS}
             try:
                 PersistenceRepository.save_queue(path, config, self.settings.tasks)
@@ -3715,8 +3879,10 @@ def run_qt_shell() -> int:
             return changed
 
         def _run_queue(self, tasks: List[RenderTask]) -> None:
+            if not self._validate_current_render_options():
+                return
             if not self.settings.ue_cmd or not os.path.exists(self.settings.ue_cmd):
-                QMessageBox.critical(self, "Render", "Specify a valid path to UnrealEditor-Cmd.exe in the loaded queue file.")
+                QMessageBox.critical(self, "Render", "Specify a valid path to UnrealEditor-Cmd.exe.")
                 return
             if tasks:
                 self._enqueue_tasks(tasks)
@@ -3763,7 +3929,12 @@ def run_qt_shell() -> int:
                 attempt = 0
                 while attempt <= retries and not self.stop_all:
                     attempt += 1
-                    cmd = self._build_command_for_task(task)
+                    try:
+                        cmd = self._build_command_for_task(task)
+                    except ValueError as exc:
+                        self.ui_events.put(TaskRuntimeEvent(TaskRuntimeEventType.TASK_FAILED, task_index, "Failed (invalid Extra CLI)", 0, end=time.time()))
+                        self._append_log(f"[Qt] [{local_counter}] Invalid Extra CLI: {exc}")
+                        break
                     start_time = time.time()
                     self._current_global_idx = task_index
                     self.ui_events.put(TaskRuntimeEvent(TaskRuntimeEventType.TASK_STARTED, task_index, "Rendering 00:00:00", 0, start_time))
