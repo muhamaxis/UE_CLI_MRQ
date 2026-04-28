@@ -89,7 +89,7 @@ The actual render result still depends on your Unreal project, MRQ preset, plugi
 For the classic launcher:
 
 ```bat
-mrq_launcher.bat
+mrq_launcherQt.bat
 ```
 
 For the Qt shell, use the Qt run/build script provided by the project if available.
