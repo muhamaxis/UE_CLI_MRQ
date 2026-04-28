@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.9.0"
+APP_VERSION = "1.9.1"
 
 UI_THEME = {
     "bg": "#111318",
@@ -2923,7 +2923,7 @@ def run_qt_shell() -> int:
         from PySide6.QtWidgets import (
             QApplication, QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
             QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QProgressBar,
-            QHeaderView, QSpinBox, QStatusBar, QStyle, QStyledItemDelegate, QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
+            QHeaderView, QSizePolicy, QSpinBox, QSplitter, QStatusBar, QStyle, QStyledItemDelegate, QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
         )
     except ImportError as exc:
         print("PySide6 is required for the Qt shell. Install it with: pip install PySide6")
@@ -2999,6 +2999,20 @@ def run_qt_shell() -> int:
             QFrame#CommandSettingsBody, QFrame#DiagnosticsLogBody {{
                 background: transparent;
                 border: none;
+            }}
+            QSplitter {{
+                background-color: transparent;
+            }}
+            QSplitter::handle {{
+                background-color: {apple['border_soft']};
+                border-radius: 3px;
+            }}
+            QSplitter::handle:horizontal {{
+                width: 8px;
+                margin: 8px 0px;
+            }}
+            QSplitter::handle:hover {{
+                background-color: {apple['accent']};
             }}
             QLabel {{
                 background: transparent;
@@ -3361,6 +3375,7 @@ def run_qt_shell() -> int:
             self.minimal_current_status_label = None
             self.minimal_session_time_label = None
             self.header_panel = None
+            self.main_splitter = None
             self.queue_panel = None
             self.inspector_panel = None
             self.diagnostics_panel = None
@@ -3393,13 +3408,21 @@ def run_qt_shell() -> int:
             self.minimal_header = self._build_minimal_header()
             self.minimal_header.setVisible(False)
             root_layout.addWidget(self.minimal_header)
-            body = QHBoxLayout()
-            body.setSpacing(14)
+            self.main_splitter = QSplitter(Qt.Horizontal, root)
+            self.main_splitter.setHandleWidth(8)
+            self.main_splitter.setChildrenCollapsible(False)
+            self.main_splitter.setOpaqueResize(True)
             self.queue_panel = self._build_queue_area()
             self.inspector_panel = self._build_inspector_area()
-            body.addWidget(self.queue_panel, 3)
-            body.addWidget(self.inspector_panel, 1)
-            root_layout.addLayout(body, 1)
+            self.queue_panel.setMinimumWidth(520)
+            self.inspector_panel.setMinimumWidth(280)
+            self.inspector_panel.setMaximumWidth(560)
+            self.main_splitter.addWidget(self.queue_panel)
+            self.main_splitter.addWidget(self.inspector_panel)
+            self.main_splitter.setStretchFactor(0, 1)
+            self.main_splitter.setStretchFactor(1, 0)
+            self.main_splitter.setSizes([980, 360])
+            root_layout.addWidget(self.main_splitter, 1)
             self.diagnostics_panel = self._build_diagnostics_area()
             root_layout.addWidget(self.diagnostics_panel)
             self.minimal_footer = self._build_minimal_footer()
@@ -3796,6 +3819,8 @@ def run_qt_shell() -> int:
                 label = QLabel(text)
                 label.setObjectName("InspectorField")
                 label.setWordWrap(True)
+                label.setMinimumWidth(0)
+                label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
                 self.inspector_labels[key] = label
                 layout.addWidget(label)
             layout.addStretch(1)
