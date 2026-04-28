@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.10.1"
+APP_VERSION = "1.10.2"
 
 UI_THEME = {
     "bg": "#111318",
@@ -48,7 +48,6 @@ STATUS_PILL_THEME = {
 }
 
 APP_ICON_RELATIVE_PATH = "resources/app_icon.ico"
-WINDOWS_APP_USER_MODEL_ID = "muhamaxis.mrqlauncher.cli"
 # -------------------------------------------------
 # Helpers
 # -------------------------------------------------
@@ -61,42 +60,9 @@ def resource_path(relative_path: str) -> str:
     return os.path.join(app_root, relative_path)
 
 
-def _candidate_app_roots() -> List[str]:
-    """Return possible application roots for source, one-dir, and one-file builds."""
-    roots = []
-
-    def add_root(path: str) -> None:
-        if path and path not in roots:
-            roots.append(path)
-
-    if hasattr(sys, "_MEIPASS"):
-        add_root(str(sys._MEIPASS))
-    if getattr(sys, "frozen", False):
-        add_root(os.path.dirname(sys.executable))
-    add_root(os.getcwd())
-    add_root(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-    add_root(os.path.dirname(__file__))
-    return roots
-
-
 def app_icon_path() -> str:
-    """Return the first available application icon path."""
-    for root in _candidate_app_roots():
-        candidate = os.path.join(root, APP_ICON_RELATIVE_PATH)
-        if os.path.exists(candidate):
-            return candidate
+    """Return the preferred application icon path."""
     return resource_path(APP_ICON_RELATIVE_PATH)
-
-
-def set_windows_app_user_model_id() -> None:
-    """Set a stable Windows taskbar identity before creating any UI window."""
-    if sys.platform != "win32":
-        return
-    try:
-        ctypes = __import__("ctypes")
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(WINDOWS_APP_USER_MODEL_ID)
-    except Exception:
-        pass
 
 
 def detect_default_unreal_cmd() -> str:
@@ -838,12 +804,9 @@ class MRQLauncher(tk.Tk):
         if not os.path.exists(icon_path):
             return
         try:
-            self.iconbitmap(default=icon_path)
+            self.iconbitmap(icon_path)
         except Exception:
-            try:
-                self.iconbitmap(icon_path)
-            except Exception:
-                pass
+            pass
 
     def _configure_styles(self):
         self.configure(bg=UI_THEME["bg"])
@@ -2980,7 +2943,6 @@ def build_unreal_command_preview(settings: AppSettings, task: RenderTask) -> str
 
 def run_qt_shell() -> int:
     """Launch the PySide6 queue workspace without replacing the Tkinter launcher."""
-    set_windows_app_user_model_id()
     try:
         from PySide6.QtCore import QEvent, Qt, QTimer
         from PySide6.QtGui import QColor, QBrush, QIcon, QPalette, QFont, QPainter, QPen
@@ -5174,7 +5136,6 @@ def run_qt_shell() -> int:
 # -------------------------------------------------
 
 if __name__ == "__main__":
-    set_windows_app_user_model_id()
     if "--qt" in sys.argv:
         raise SystemExit(run_qt_shell())
     app = MRQLauncher()

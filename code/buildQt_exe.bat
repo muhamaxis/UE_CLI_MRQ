@@ -3,7 +3,7 @@ setlocal enableextensions enabledelayedexpansion
 
 REM ===== Config =====
 set NAME=MRQLauncherQT
-set VER=1.10.1
+set VER=1.10.2
 set LOG=build_qt_log.txt
 set QT_HOOK=_qt_runtime_hook.py
 
@@ -32,6 +32,10 @@ if not exist "%ICON%" (
   goto :fail
 )
 
+REM Use absolute paths for PyInstaller resource embedding.
+for %%I in ("%MAIN%") do set MAIN_ABS=%%~fI
+for %%I in ("%ICON%") do set ICON_ABS=%%~fI
+
 REM ===== Clean =====
 for /d %%D in (build dist __pycache__) do if exist "%%D" rmdir /s /q "%%D"
 del /q "%NAME%.spec" 2>nul
@@ -57,8 +61,8 @@ echo [i] Python version:
 python --version
 
 echo [i] Build version: %VER%
-echo [i] Main script: %MAIN%
-echo [i] App icon: %ICON%
+echo [i] Main script: %MAIN_ABS%
+echo [i] App icon: %ICON_ABS%
 
 echo [i] Creating Qt runtime hook...
 (
@@ -67,24 +71,29 @@ echo [i] Creating Qt runtime hook...
   echo     sys.argv.append("--qt"^)
 ) > "%QT_HOOK%"
 
+REM IMPORTANT:
+REM Do not generate/pass a temporary --version-file here.
+REM A malformed version resource can abort the build before the EXE is created.
+REM The Explorer icon is embedded by --icon.
+
 echo [i] Building Qt OneDir...
 pyinstaller ^
-  "%MAIN%" ^
+  "%MAIN_ABS%" ^
   --name "%NAME%" ^
   --onedir ^
   --noconfirm ^
   --clean ^
-  --log-level DEBUG ^
+  --log-level INFO ^
   --noconsole ^
-  --icon "%ICON%" ^
-  --add-data "%ICON%;resources" ^
+  --icon "%ICON_ABS%" ^
+  --add-data "%ICON_ABS%;resources" ^
   --runtime-hook "%QT_HOOK%" ^
   --collect-all PySide6 ^
-  > "%LOG%" 2^>^&1
+  > "%LOG%" 2>&1
 
 if errorlevel 1 (
   echo [!] Qt OneDir build failed. See %LOG%
-  type "%LOG%" ^| findstr /i /c:"ERROR" /c:"FAILED" /c:"Traceback"
+  call :show_log_tail
   goto :fail
 )
 
@@ -92,26 +101,36 @@ echo [i] Qt OneDir OK: dist\%NAME%\%NAME%.exe
 
 echo [i] Building Qt OneFile...
 pyinstaller ^
-  "%MAIN%" ^
+  "%MAIN_ABS%" ^
   --name "%NAME%" ^
   --onefile ^
   --noconfirm ^
   --clean ^
-  --log-level DEBUG ^
+  --log-level INFO ^
   --noconsole ^
-  --icon "%ICON%" ^
-  --add-data "%ICON%;resources" ^
+  --icon "%ICON_ABS%" ^
+  --add-data "%ICON_ABS%;resources" ^
   --runtime-hook "%QT_HOOK%" ^
   --collect-all PySide6 ^
-  >> "%LOG%" 2^>^&1
+  >> "%LOG%" 2>&1
 
 if errorlevel 1 (
   echo [!] Qt OneFile failed. OneDir is ready to use. See %LOG%
+  call :show_log_tail
   goto :done
 )
 
 echo [i] Qt OneFile OK: dist\%NAME%.exe
 goto :done
+
+:show_log_tail
+if exist "%LOG%" (
+  echo.
+  echo ===== Last build log lines =====
+  powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-Content -Path '%LOG%' -Tail 80" 2>nul
+  echo ===============================
+)
+exit /b 0
 
 :fail
 echo.
@@ -120,5 +139,5 @@ echo     Please send build_qt_log.txt if it fails.
 exit /b 1
 
 :done
-del /q "%QT_HOOK%" 2^>nul
+del /q "%QT_HOOK%" 2>nul
 endlocal
