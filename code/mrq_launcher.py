@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.8.9"
+APP_VERSION = "1.9.0"
 
 UI_THEME = {
     "bg": "#111318",
@@ -2919,11 +2919,11 @@ def run_qt_shell() -> int:
     """Launch the PySide6 queue workspace without replacing the Tkinter launcher."""
     try:
         from PySide6.QtCore import Qt, QTimer
-        from PySide6.QtGui import QColor, QBrush, QPalette, QFont
+        from PySide6.QtGui import QColor, QBrush, QPalette, QFont, QPainter, QPen
         from PySide6.QtWidgets import (
             QApplication, QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
             QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QProgressBar,
-            QHeaderView, QSpinBox, QStatusBar, QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
+            QHeaderView, QSpinBox, QStatusBar, QStyle, QStyledItemDelegate, QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
         )
     except ImportError as exc:
         print("PySide6 is required for the Qt shell. Install it with: pip install PySide6")
@@ -3186,6 +3186,42 @@ def run_qt_shell() -> int:
             }}
         """)
 
+    class QtStatusPillDelegate(QStyledItemDelegate):
+        """Draw rounded status pills in the Qt queue table."""
+
+        def paint(self, painter: QPainter, option, index) -> None:
+            text = str(index.data(Qt.DisplayRole) or "")
+            bg = index.data(Qt.UserRole + 1) or STATUS_PILL_THEME["ready"]["bg"]
+            fg = index.data(Qt.UserRole + 2) or STATUS_PILL_THEME["ready"]["text"]
+            border = index.data(Qt.UserRole + 3) or STATUS_PILL_THEME["ready"]["border"]
+
+            painter.save()
+            painter.setRenderHint(QPainter.Antialiasing, True)
+
+            row_bg = QColor("#151820")
+            if option.state & QStyle.State_Selected:
+                row_bg = QColor("#123B67")
+            elif index.row() % 2:
+                row_bg = QColor("#1A1F2A")
+            painter.fillRect(option.rect, row_bg)
+
+            rect = option.rect.adjusted(10, 7, -10, -7)
+            min_width = 92
+            if rect.width() > min_width:
+                rect.setWidth(min(rect.width(), max(min_width, 22 + len(text) * 8)))
+
+            painter.setPen(QPen(QColor(border), 1))
+            painter.setBrush(QBrush(QColor(bg)))
+            painter.drawRoundedRect(rect, 7, 7)
+
+            font = QFont(option.font)
+            font.setBold(True)
+            painter.setFont(font)
+            painter.setPen(QColor(fg))
+            painter.drawText(rect, Qt.AlignCenter, text)
+            painter.restore()
+
+
     class QtTaskEditor(QDialog):
         """Qt editor for one render task."""
 
@@ -3402,14 +3438,15 @@ def run_qt_shell() -> int:
 
         def _apply_status_item_style(self, item: QTableWidgetItem, task: RenderTask, state: dict, column: int) -> None:
             """Apply compact dark status styling without changing runtime state."""
-            bg, fg, _border = self._status_colors_for_task(task, state)
+            bg, fg, border = self._status_colors_for_task(task, state)
             if column == 0:
-                item.setBackground(QBrush(QColor(bg)))
-                item.setForeground(QBrush(QColor(fg)))
                 font = item.font()
                 font.setBold(True)
                 item.setFont(font)
                 item.setTextAlignment(Qt.AlignCenter)
+                item.setData(Qt.UserRole + 1, bg)
+                item.setData(Qt.UserRole + 2, fg)
+                item.setData(Qt.UserRole + 3, border)
             else:
                 if not task.enabled:
                     item.setForeground(QBrush(QColor(UI_THEME["muted"])))
@@ -3417,7 +3454,6 @@ def run_qt_shell() -> int:
                     item.setForeground(QBrush(QColor("#A8C9FF")))
                 else:
                     item.setForeground(QBrush(QColor(UI_THEME["text"])))
-            item.setData(Qt.UserRole + 1, bg)
 
         def _build_header(self) -> QFrame:
             panel = self._panel()
@@ -3739,6 +3775,8 @@ def run_qt_shell() -> int:
             self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
             self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
             self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+            self.table.setItemDelegateForColumn(0, QtStatusPillDelegate(self.table))
+            self.table.setColumnWidth(0, 116)
             self.table.itemSelectionChanged.connect(self._on_selection_changed)
             self.table.doubleClicked.connect(lambda *_: self.toggle_selected())
             layout.addWidget(self.table, 1)
@@ -4006,6 +4044,7 @@ def run_qt_shell() -> int:
                     self._apply_status_item_style(item, task, state, column)
                     self.table.setItem(row, column, item)
             self.table.resizeColumnsToContents()
+            self.table.setColumnWidth(0, 116)
             for row, task_index in enumerate(visible_indices):
                 if task_index in selected_indices:
                     self.table.selectRow(row)
