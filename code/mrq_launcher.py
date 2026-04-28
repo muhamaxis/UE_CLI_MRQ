@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.9.5"
+APP_VERSION = "1.9.6"
 
 UI_THEME = {
     "bg": "#111318",
@@ -2918,7 +2918,7 @@ def build_unreal_command_preview(settings: AppSettings, task: RenderTask) -> str
 def run_qt_shell() -> int:
     """Launch the PySide6 queue workspace without replacing the Tkinter launcher."""
     try:
-        from PySide6.QtCore import Qt, QTimer
+        from PySide6.QtCore import QEvent, Qt, QTimer
         from PySide6.QtGui import QColor, QBrush, QPalette, QFont, QPainter, QPen
         from PySide6.QtWidgets import (
             QApplication, QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
@@ -3815,6 +3815,7 @@ def run_qt_shell() -> int:
             self.table.customContextMenuRequested.connect(self._on_table_context_menu)
             self.table.itemSelectionChanged.connect(self._on_selection_changed)
             self.table.doubleClicked.connect(self._on_table_double_clicked)
+            self.table.installEventFilter(self)
             layout.addWidget(self.table, 1)
             return panel
 
@@ -4134,6 +4135,20 @@ def run_qt_shell() -> int:
             if id(task) not in self.queue_order_by_task_id:
                 self.queue_order_by_task_id[id(task)] = self._next_queue_order()
 
+        def _remove_order_from_task(self, task: RenderTask) -> None:
+            self.queue_order_by_task_id.pop(id(task), None)
+
+        def _rebuild_order_for_enabled_tasks(self) -> None:
+            """Create session-only queue order from enabled tasks in list order."""
+            self.queue_order_by_task_id.clear()
+            order = 1
+            for idx, task in enumerate(self.settings.tasks):
+                state = self.state[idx] if idx < len(self.state) else default_task_state()
+                if not task.enabled or state.get("status", "Ready").startswith(TaskRuntimeStatus.RENDERING):
+                    continue
+                self.queue_order_by_task_id[id(task)] = order
+                order += 1
+
         def _compact_queue_order(self) -> None:
             ordered = []
             for idx, task in enumerate(self.settings.tasks):
@@ -4408,7 +4423,7 @@ def run_qt_shell() -> int:
             self.settings.tasks = tasks
             self.state = [default_task_state() for _ in self.settings.tasks]
             self.runtime_queue.clear_pending(TaskRuntimeStatus.CANCELLED_QUEUE)
-            self.queue_order_by_task_id.clear()
+            self._rebuild_order_for_enabled_tasks()
             self.refresh_queue_view()
             self._append_log(f"[Qt] Loaded queue: {path}")
 
@@ -4538,31 +4553,47 @@ def run_qt_shell() -> int:
                     self.table.selectRow(row)
                     break
 
-        def _on_table_double_clicked(self, _index=None) -> None:
-            self.toggle_selected()
+        def _on_table_double_clicked(self, index=None) -> None:
+            task_index = index.data(Qt.UserRole) if index is not None and index.isValid() else None
+            if isinstance(task_index, int):
+                self.toggle_task_indices([task_index])
+            else:
+                self.toggle_selected()
 
-        def toggle_selected(self) -> None:
+        def eventFilter(self, source, event) -> bool:
+            if source is self.table and event.type() == QEvent.KeyPress and event.key() == Qt.Key_Space:
+                self.toggle_selected()
+                return True
+            return super().eventFilter(source, event)
+
+        def toggle_task_indices(self, indices: List[int]) -> None:
             disabled_tasks = []
             changed = False
             self._ensure_state()
-            for idx in self.selected_indices():
+            for idx in sorted(set(indices)):
+                if not (0 <= idx < len(self.settings.tasks)):
+                    continue
                 state = self.state[idx] if idx < len(self.state) else default_task_state()
                 if state.get("status", "Ready").startswith(TaskRuntimeStatus.RENDERING):
                     continue
                 task = self.settings.tasks[idx]
-                task.enabled = not task.enabled
+                if task.enabled:
+                    task.enabled = False
+                    self._remove_order_from_task(task)
+                    disabled_tasks.append(task)
+                else:
+                    task.enabled = True
+                    self._assign_order_to_task(task)
                 self.state[idx] = default_task_state()
                 changed = True
-                if task.enabled:
-                    self._assign_order_to_task(task)
-                else:
-                    self.queue_order_by_task_id.pop(id(task), None)
-                    disabled_tasks.append(task)
             if disabled_tasks:
                 self.runtime_queue.remove_tasks(disabled_tasks)
             if changed:
                 self._compact_queue_order()
-            self.refresh_queue_view()
+                self.refresh_queue_view()
+
+        def toggle_selected(self) -> None:
+            self.toggle_task_indices(self.selected_indices())
 
         def toggle_all_ready_disabled(self) -> None:
             """Rebuild the session render order from the current table order."""
