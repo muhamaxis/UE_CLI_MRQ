@@ -4,3 +4,6 @@
 code/build_log.txt
 code/MRQLauncherCLI.spec
 /code/.venv
+code/build_qt_log.txt
+code/buildQt_exe.bat
+code/MRQLauncherQT.spec

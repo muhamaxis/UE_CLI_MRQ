@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.8.7"
+APP_VERSION = "1.8.8"
 
 UI_THEME = {
     "bg": "#111318",
@@ -2996,7 +2996,7 @@ def run_qt_shell() -> int:
                 border: 1px solid {apple['border_soft']};
                 border-radius: 12px;
             }}
-            QFrame#CommandSettingsBody {{
+            QFrame#CommandSettingsBody, QFrame#DiagnosticsLogBody {{
                 background: transparent;
                 border: none;
             }}
@@ -3299,7 +3299,12 @@ def run_qt_shell() -> int:
             self.command_settings_body = None
             self.command_settings_toggle = None
             self.command_settings_summary = None
-            self.command_settings_expanded = True
+            self.command_settings_expanded = False
+            self.diagnostics_log_panel = None
+            self.diagnostics_log_body = None
+            self.diagnostics_log_toggle = None
+            self.diagnostics_log_summary = None
+            self.diagnostics_log_expanded = False
             self.command_preview = None
             self.log_view = None
             self.progress_bar = None
@@ -3755,39 +3760,34 @@ def run_qt_shell() -> int:
         def _build_diagnostics_area(self) -> QFrame:
             panel = self._panel()
             layout = QVBoxLayout(panel)
+            layout.setSpacing(10)
+
             controls = QHBoxLayout()
+            controls.setSpacing(8)
             for text, callback in (
-                ("Render Enabled", self.render_enabled), ("Render Selected", self.render_selected),
-                ("Queue Selected", self.queue_selected_or_enabled), ("Render All", self.render_all),
+                ("Add Enabled to Queue", self.render_enabled),
+                ("Add Selected to Queue", self.render_selected),
+                ("Queue Selected", self.queue_selected_or_enabled),
+                ("Add All to Queue", self.render_all),
+                ("Clear Status", self.clear_status_selected),
+                ("Stop Current Render", self.cancel_current),
             ):
-                role = "primary" if text == "Render Enabled" else "secondary"
+                role = "primary" if text == "Add Enabled to Queue" else "secondary"
                 button = self._mark_button(QPushButton(text), role)
                 button.clicked.connect(callback)
                 controls.addWidget(button)
-            stop_current = self._mark_button(QPushButton("Stop Current Render"))
-            stop_current.clicked.connect(self.cancel_current)
             stop_all = self._mark_button(QPushButton("Stop All"), "danger")
             stop_all.clicked.connect(self.cancel_all)
-            controls.addWidget(stop_current)
             controls.addWidget(stop_all)
             controls.addStretch(1)
-            layout.addLayout(controls)
-
-            diagnostics_actions = QHBoxLayout()
             for text, callback in (
-                ("Clear Status", self.clear_status_selected),
-                ("Load Task(s)", self.load_task_dialog),
-                ("Save Selected Task(s)", self.save_selected_tasks_dialog),
-                ("Save Queue Log", self.save_queue_log),
                 ("Open Logs Folder", self.open_logs_folder),
                 ("Open Last Log", self.open_last_log_for_selected),
-                ("Copy Command", self.copy_command_preview),
             ):
                 button = self._mark_button(QPushButton(text))
                 button.clicked.connect(callback)
-                diagnostics_actions.addWidget(button)
-            diagnostics_actions.addStretch(1)
-            layout.addLayout(diagnostics_actions)
+                controls.addWidget(button)
+            layout.addLayout(controls)
 
             status_row = QHBoxLayout()
             self.current_task_label = QLabel("Current task: Idle")
@@ -3802,18 +3802,77 @@ def run_qt_shell() -> int:
             status_row.addWidget(self.session_time_label)
             layout.addLayout(status_row)
 
-            diagnostics = QHBoxLayout()
-            self.command_preview = QTextEdit(panel)
+            self.diagnostics_log_panel = QFrame(panel)
+            self.diagnostics_log_panel.setObjectName("ToolbarStrip")
+            log_shell = QVBoxLayout(self.diagnostics_log_panel)
+            log_shell.setContentsMargins(10, 10, 10, 10)
+            log_shell.setSpacing(8)
+
+            log_title_row = QHBoxLayout()
+            log_title_row.setSpacing(10)
+            self.diagnostics_log_toggle = QPushButton("▸", self.diagnostics_log_panel)
+            self.diagnostics_log_toggle.setObjectName("DisclosureButton")
+            self.diagnostics_log_toggle.clicked.connect(self._toggle_diagnostics_log_panel)
+            log_title_row.addWidget(self.diagnostics_log_toggle)
+            title_col = QVBoxLayout()
+            title_col.setSpacing(0)
+            title_col.addWidget(self._section_label("Command Preview & Log"))
+            self.diagnostics_log_summary = QLabel("Collapsed • command preview and live render log")
+            self.diagnostics_log_summary.setObjectName("CommandSummary")
+            title_col.addWidget(self.diagnostics_log_summary)
+            log_title_row.addLayout(title_col, 1)
+            copy_button = self._mark_button(QPushButton("Copy Command"))
+            copy_button.clicked.connect(self.copy_command_preview)
+            log_title_row.addWidget(copy_button)
+            save_log_button = self._mark_button(QPushButton("Save Queue Log"))
+            save_log_button.clicked.connect(self.save_queue_log)
+            log_title_row.addWidget(save_log_button)
+            load_task_button = self._mark_button(QPushButton("Load Task(s)"))
+            load_task_button.clicked.connect(self.load_task_dialog)
+            log_title_row.addWidget(load_task_button)
+            save_task_button = self._mark_button(QPushButton("Save Selected Task(s)"))
+            save_task_button.clicked.connect(self.save_selected_tasks_dialog)
+            log_title_row.addWidget(save_task_button)
+            log_shell.addLayout(log_title_row)
+
+            self.diagnostics_log_body = QFrame(self.diagnostics_log_panel)
+            self.diagnostics_log_body.setObjectName("DiagnosticsLogBody")
+            diagnostics = QHBoxLayout(self.diagnostics_log_body)
+            diagnostics.setContentsMargins(0, 0, 0, 0)
+            diagnostics.setSpacing(8)
+            self.command_preview = QTextEdit(self.diagnostics_log_body)
             self.command_preview.setReadOnly(True)
             self.command_preview.setPlaceholderText("Select a task to inspect the generated command line.")
             self.command_preview.setMinimumHeight(150)
-            self.log_view = QTextEdit(panel)
+            self.log_view = QTextEdit(self.diagnostics_log_body)
             self.log_view.setReadOnly(True)
             self.log_view.setMinimumHeight(150)
             diagnostics.addWidget(self.command_preview, 1)
             diagnostics.addWidget(self.log_view, 1)
-            layout.addLayout(diagnostics)
+            log_shell.addWidget(self.diagnostics_log_body)
+            layout.addWidget(self.diagnostics_log_panel)
+            self._apply_diagnostics_log_collapsed_state()
             return panel
+
+        def _toggle_diagnostics_log_panel(self) -> None:
+            self.diagnostics_log_expanded = not self.diagnostics_log_expanded
+            self._apply_diagnostics_log_collapsed_state()
+
+        def _apply_diagnostics_log_collapsed_state(self) -> None:
+            if self.diagnostics_log_body:
+                self.diagnostics_log_body.setVisible(self.diagnostics_log_expanded)
+            if self.diagnostics_log_toggle:
+                self.diagnostics_log_toggle.setText("▾" if self.diagnostics_log_expanded else "▸")
+            if self.diagnostics_log_summary:
+                self.diagnostics_log_summary.setText(
+                    "Expanded • command preview and live render log"
+                    if self.diagnostics_log_expanded
+                    else "Collapsed • command preview and live render log"
+                )
+            if self.diagnostics_log_panel:
+                self.diagnostics_log_panel.setMinimumHeight(230 if self.diagnostics_log_expanded else 66)
+                self.diagnostics_log_panel.setMaximumHeight(16777215 if self.diagnostics_log_expanded else 76)
+                self.diagnostics_log_panel.updateGeometry()
 
         def _build_minimal_footer(self) -> QFrame:
             panel = self._panel()
@@ -3821,14 +3880,11 @@ def run_qt_shell() -> int:
             self.minimal_current_task_label = QLabel("Current task: Idle")
             self.minimal_current_status_label = QLabel("Status: Idle")
             self.minimal_session_time_label = QLabel("Session total: 00:00:00")
-            self.minimal_progress_bar = QProgressBar(panel)
-            self.minimal_progress_bar.setRange(0, 100)
-            self.minimal_progress_bar.setValue(0)
+            self.minimal_progress_bar = None
             layout.addWidget(self.minimal_session_time_label)
             layout.addWidget(QLabel("•"))
-            layout.addWidget(self.minimal_current_task_label)
+            layout.addWidget(self.minimal_current_task_label, 1)
             layout.addWidget(self.minimal_current_status_label)
-            layout.addWidget(self.minimal_progress_bar, 1)
             return panel
 
         def enter_minimal_mode(self) -> None:
@@ -3900,7 +3956,7 @@ def run_qt_shell() -> int:
             visible_rows = self.table.rowCount() if self.table else 0
             row_count = max(6, min(visible_rows, 12))
             width = 820
-            height = max(360, min(620, 190 + row_count * 30))
+            height = max(340, min(600, 160 + row_count * 30))
             self.resize(width, height)
 
         def _ensure_state(self) -> None:
