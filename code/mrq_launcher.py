@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.9.9"
+APP_VERSION = "1.10.0"
 
 UI_THEME = {
     "bg": "#111318",
@@ -46,9 +46,24 @@ STATUS_PILL_THEME = {
     "disabled": {"bg": "#2A313B", "text": "#C9D2DD", "border": "#404B59"},
     "skipped": {"bg": "#3A2A4B", "text": "#D7C7FF", "border": "#5C4777"},
 }
+
+APP_ICON_RELATIVE_PATH = "resources/app_icon.ico"
 # -------------------------------------------------
 # Helpers
 # -------------------------------------------------
+
+def resource_path(relative_path: str) -> str:
+    """Return an absolute resource path for source runs and PyInstaller builds."""
+    if hasattr(sys, "_MEIPASS"):
+        return os.path.join(sys._MEIPASS, relative_path)
+    app_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    return os.path.join(app_root, relative_path)
+
+
+def app_icon_path() -> str:
+    """Return the preferred application icon path."""
+    return resource_path(APP_ICON_RELATIVE_PATH)
+
 
 def detect_default_unreal_cmd() -> str:
     candidates = [
@@ -667,6 +682,7 @@ class MRQLauncher(tk.Tk):
         self._apply_tk_scaling()
         # Window title with version
         self.title(f"MRQ Launcher (CLI) ver {APP_VERSION}")
+        self._apply_window_icon()
         self.geometry(f"{self._s(1480)}x{self._s(920)}")
         self.resizable(True, True)
         self.minsize(self._s(1280), self._s(760))
@@ -781,6 +797,16 @@ class MRQLauncher(tk.Tk):
         self._update_inspector()
         self._update_command_preview()
         self._update_status_summary()
+
+    def _apply_window_icon(self) -> None:
+        """Apply the shared application icon when the resource is available."""
+        icon_path = app_icon_path()
+        if not os.path.exists(icon_path):
+            return
+        try:
+            self.iconbitmap(icon_path)
+        except Exception:
+            pass
 
     def _configure_styles(self):
         self.configure(bg=UI_THEME["bg"])
@@ -2919,7 +2945,7 @@ def run_qt_shell() -> int:
     """Launch the PySide6 queue workspace without replacing the Tkinter launcher."""
     try:
         from PySide6.QtCore import QEvent, Qt, QTimer
-        from PySide6.QtGui import QColor, QBrush, QPalette, QFont, QPainter, QPen
+        from PySide6.QtGui import QColor, QBrush, QIcon, QPalette, QFont, QPainter, QPen
         from PySide6.QtWidgets import (
             QApplication, QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
             QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton,
@@ -3443,6 +3469,9 @@ def run_qt_shell() -> int:
             self._normal_geometry = None
             self.inspector_labels = {}
             self.setWindowTitle(f"MRQ Launcher (Qt Shell) ver {APP_VERSION}")
+            icon_path = app_icon_path()
+            if os.path.exists(icon_path):
+                self.setWindowIcon(QIcon(icon_path))
             self.resize(1420, 860)
             self.full_minimum_size = (1120, 680)
             self.minimal_minimum_size = (560, 360)
@@ -5094,6 +5123,9 @@ def run_qt_shell() -> int:
             return None
 
     app = QApplication.instance() or QApplication(sys.argv)
+    icon_path = app_icon_path()
+    if os.path.exists(icon_path):
+        app.setWindowIcon(QIcon(icon_path))
     apply_qt_dark_theme(app)
     window = QtMRQShell()
     window.show()
