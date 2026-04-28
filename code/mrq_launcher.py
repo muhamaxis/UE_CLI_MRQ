@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.9.2"
+APP_VERSION = "1.9.3"
 
 UI_THEME = {
     "bg": "#111318",
@@ -2923,7 +2923,7 @@ def run_qt_shell() -> int:
         from PySide6.QtWidgets import (
             QApplication, QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
             QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton,
-            QHeaderView, QSizePolicy, QSpinBox, QSplitter, QStatusBar, QStyle, QStyledItemDelegate, QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
+            QHeaderView, QMenu, QSizePolicy, QSpinBox, QSplitter, QStatusBar, QStyle, QStyledItemDelegate, QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
         )
     except ImportError as exc:
         print("PySide6 is required for the Qt shell. Install it with: pip install PySide6")
@@ -3161,6 +3161,29 @@ def run_qt_shell() -> int:
                 background-color: {apple['card']};
                 color: {apple['muted']};
                 border-top: 1px solid {apple['border_soft']};
+            }}
+            QMenu {{
+                background-color: {apple['card_alt']};
+                color: {apple['text']};
+                border: 1px solid {apple['border']};
+                border-radius: 8px;
+                padding: 6px;
+            }}
+            QMenu::item {{
+                padding: 7px 28px 7px 18px;
+                border-radius: 6px;
+            }}
+            QMenu::item:selected {{
+                background-color: {apple['accent_soft']};
+                color: #FFFFFF;
+            }}
+            QMenu::item:disabled {{
+                color: {apple['muted2']};
+            }}
+            QMenu::separator {{
+                height: 1px;
+                background-color: {apple['border_soft']};
+                margin: 6px 4px;
             }}
             QScrollBar:vertical {{
                 background: {apple['card']};
@@ -3786,10 +3809,65 @@ def run_qt_shell() -> int:
             self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
             self.table.setItemDelegateForColumn(0, QtStatusPillDelegate(self.table))
             self.table.setColumnWidth(0, 116)
+            self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+            self.table.customContextMenuRequested.connect(self._on_table_context_menu)
             self.table.itemSelectionChanged.connect(self._on_selection_changed)
             self.table.doubleClicked.connect(lambda *_: self.toggle_selected())
             layout.addWidget(self.table, 1)
             return panel
+
+        def _add_context_action(self, menu: QMenu, label: str, callback, enabled: bool = True):
+            """Add a context-menu action with consistent enabled-state handling."""
+            action = menu.addAction(label)
+            action.setEnabled(enabled)
+            if enabled:
+                action.triggered.connect(callback)
+            return action
+
+        def _on_table_context_menu(self, pos) -> None:
+            """Select the row under the cursor and show the task context menu."""
+            if not self.table:
+                return
+
+            item = self.table.itemAt(pos)
+            if item is not None:
+                row = item.row()
+                row_indices = {
+                    self.table.item(row, col).data(Qt.UserRole)
+                    for col in range(self.table.columnCount())
+                    if self.table.item(row, col) is not None
+                }
+                selected = set(self.selected_indices())
+                if not row_indices.intersection(selected):
+                    self.table.clearSelection()
+                    self.table.selectRow(row)
+            elif not self.selected_indices():
+                self.table.clearSelection()
+
+            selected_count = len(self.selected_indices())
+            has_selection = selected_count > 0
+            can_move_single = selected_count == 1
+
+            menu = QMenu(self.table)
+            self._add_context_action(menu, "Add Task", self.add_task_dialog)
+            self._add_context_action(menu, "Edit Task", self.edit_selected_task, has_selection)
+            self._add_context_action(menu, "Duplicate Task", self.duplicate_selected, has_selection)
+            self._add_context_action(menu, "Remove Task(s)", self.remove_selected, has_selection)
+            menu.addSeparator()
+            self._add_context_action(menu, "Move Up", lambda: self.move_selected(-1), can_move_single)
+            self._add_context_action(menu, "Move Down", lambda: self.move_selected(1), can_move_single)
+            menu.addSeparator()
+            section = menu.addAction("Task Save/Load")
+            section.setEnabled(False)
+            self._add_context_action(menu, "Load Task(s)...", self.load_task_dialog)
+            self._add_context_action(menu, "Save Selected Task(s)...", self.save_selected_tasks_dialog, has_selection)
+            menu.addSeparator()
+            self._add_context_action(menu, "Load Queue...", self.load_queue_dialog)
+            self._add_context_action(menu, "Save Queue...", self.save_queue_dialog)
+            self._add_context_action(menu, "Save Queue Log...", self.save_queue_log)
+            menu.addSeparator()
+            self._add_context_action(menu, "Clear Status", self.clear_status_selected, has_selection)
+            menu.exec(self.table.viewport().mapToGlobal(pos))
 
         def _build_inspector_area(self) -> QFrame:
             panel = self._panel()
