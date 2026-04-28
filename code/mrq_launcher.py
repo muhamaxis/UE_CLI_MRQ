@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.8.8"
+APP_VERSION = "1.8.9"
 
 UI_THEME = {
     "bg": "#111318",
@@ -3051,6 +3051,15 @@ def run_qt_shell() -> int:
                 background-color: {apple['accent_hover']};
                 border-color: {apple['accent_hover']};
             }}
+            QPushButton[role="warning"] {{
+                background-color: #C76A1D;
+                border-color: #E07B24;
+                color: #FFFFFF;
+            }}
+            QPushButton[role="warning"]:hover {{
+                background-color: #E07B24;
+                border-color: #F08A2A;
+            }}
             QPushButton[role="danger"] {{
                 background-color: #3A1F24;
                 border-color: #6B2B32;
@@ -3764,15 +3773,13 @@ def run_qt_shell() -> int:
 
             controls = QHBoxLayout()
             controls.setSpacing(8)
-            for text, callback in (
-                ("Add Enabled to Queue", self.render_enabled),
-                ("Add Selected to Queue", self.render_selected),
-                ("Queue Selected", self.queue_selected_or_enabled),
-                ("Add All to Queue", self.render_all),
-                ("Clear Status", self.clear_status_selected),
-                ("Stop Current Render", self.cancel_current),
+            for text, callback, role in (
+                ("Render Enabled", self.render_enabled, "warning"),
+                ("Render Selected", self.render_selected, "warning"),
+                ("Append Selected to Render Queue", self.append_selected_to_render_queue, "secondary"),
+                ("Clear Status", self.clear_status_selected, "secondary"),
+                ("Stop Current Render", self.cancel_current, "secondary"),
             ):
-                role = "primary" if text == "Add Enabled to Queue" else "secondary"
                 button = self._mark_button(QPushButton(text), role)
                 button.clicked.connect(callback)
                 controls.addWidget(button)
@@ -4373,14 +4380,18 @@ def run_qt_shell() -> int:
         def render_all(self) -> None:
             self._run_queue(self._collect())
 
-        def queue_selected_or_enabled(self) -> None:
-            tasks = self._collect(only_selected=True) or self._collect(only_enabled=True)
+        def append_selected_to_render_queue(self) -> None:
+            tasks = self._collect(only_selected=True)
             if not tasks:
-                QMessageBox.information(self, "Queue Selected", "Nothing to enqueue: select tasks or enable some tasks.")
+                QMessageBox.information(self, "Append Selected", "Select at least one task in the table.")
+                return
+            if not (self.worker_running or self.process_controller.is_active()):
+                QMessageBox.information(self, "Append Selected", "Start a render first, then append selected tasks to the active queue.")
                 return
             self._enqueue_tasks(tasks)
-            if not self.worker_running:
-                self._run_queue([])
+
+        def queue_selected_or_enabled(self) -> None:
+            self.append_selected_to_render_queue()
 
         def _enqueue_tasks(self, tasks: List[RenderTask]) -> bool:
             changed = self.runtime_queue.enqueue_tasks(tasks, mark_queued=True, log_prefix="[Qt] Queued ")
