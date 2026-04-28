@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.9.6"
+APP_VERSION = "1.9.7"
 
 UI_THEME = {
     "bg": "#111318",
@@ -3247,6 +3247,42 @@ def run_qt_shell() -> int:
             painter.restore()
 
 
+    class QtOrderBadgeDelegate(QStyledItemDelegate):
+        """Draw compact orange queue order badges."""
+
+        def paint(self, painter: QPainter, option, index) -> None:
+            text = str(index.data(Qt.DisplayRole) or "").strip()
+
+            painter.save()
+            painter.setRenderHint(QPainter.Antialiasing, True)
+
+            row_bg = QColor("#151820")
+            if option.state & QStyle.State_Selected:
+                row_bg = QColor("#123B67")
+            elif index.row() % 2:
+                row_bg = QColor("#1A1F2A")
+            painter.fillRect(option.rect, row_bg)
+
+            if text:
+                size = min(option.rect.height() - 10, 26)
+                width = max(size, min(option.rect.width() - 14, 18 + len(text) * 8))
+                x = option.rect.x() + max(7, (option.rect.width() - width) // 2)
+                y = option.rect.y() + max(5, (option.rect.height() - size) // 2)
+                rect = option.rect.__class__(x, y, width, size)
+
+                painter.setPen(QPen(QColor("#F08A2A"), 1))
+                painter.setBrush(QBrush(QColor("#C76A1D")))
+                painter.drawRoundedRect(rect, 6, 6)
+
+                font = QFont(option.font)
+                font.setBold(True)
+                painter.setFont(font)
+                painter.setPen(QColor("#FFFFFF"))
+                painter.drawText(rect, Qt.AlignCenter, text)
+
+            painter.restore()
+
+
     class QtTaskEditor(QDialog):
         """Qt editor for one render task."""
 
@@ -3470,8 +3506,14 @@ def run_qt_shell() -> int:
             return palette["bg"], palette["text"], palette["border"]
 
         def _apply_status_item_style(self, item: QTableWidgetItem, task: RenderTask, state: dict, column: int) -> None:
-            """Apply compact dark status styling without changing runtime state."""
+            """Apply compact dark table styling without changing runtime state."""
             bg, fg, border = self._status_colors_for_task(task, state)
+            if column == 0:
+                font = item.font()
+                font.setBold(True)
+                item.setFont(font)
+                item.setTextAlignment(Qt.AlignCenter)
+                return
             if column == 1:
                 font = item.font()
                 font.setBold(True)
@@ -3808,6 +3850,7 @@ def run_qt_shell() -> int:
             self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
             self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
             self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+            self.table.setItemDelegateForColumn(0, QtOrderBadgeDelegate(self.table))
             self.table.setItemDelegateForColumn(1, QtStatusPillDelegate(self.table))
             self.table.setColumnWidth(0, 68)
             self.table.setColumnWidth(1, 116)
@@ -4210,14 +4253,31 @@ def run_qt_shell() -> int:
             self._update_command_preview()
             self._update_status_bar()
 
+        def _task_index_for_table_row(self, row: int) -> Optional[int]:
+            """Resolve a visible table row to the underlying task index."""
+            if not self.table or row < 0 or row >= self.table.rowCount():
+                return None
+            item = self.table.item(row, 0)
+            if item is None:
+                return None
+            task_index = item.data(Qt.UserRole)
+            return task_index if isinstance(task_index, int) else None
+
         def selected_indices(self) -> List[int]:
             if not self.table:
                 return []
+            rows = []
+            selection_model = self.table.selectionModel()
+            if selection_model is not None:
+                rows = [index.row() for index in selection_model.selectedRows()]
+            if not rows:
+                rows = sorted({item.row() for item in self.table.selectedItems()})
+
             indices = []
             seen = set()
-            for item in self.table.selectedItems():
-                task_index = item.data(Qt.UserRole)
-                if isinstance(task_index, int) and task_index not in seen:
+            for row in rows:
+                task_index = self._task_index_for_table_row(row)
+                if task_index is not None and task_index not in seen:
                     seen.add(task_index)
                     indices.append(task_index)
             return sorted(indices)
@@ -4554,11 +4614,11 @@ def run_qt_shell() -> int:
                     break
 
         def _on_table_double_clicked(self, index=None) -> None:
-            task_index = index.data(Qt.UserRole) if index is not None and index.isValid() else None
-            if isinstance(task_index, int):
-                self.toggle_task_indices([task_index])
-            else:
+            task_index = self._task_index_for_table_row(index.row()) if index is not None and index.isValid() else None
+            if task_index is None:
                 self.toggle_selected()
+                return
+            self.toggle_task_indices([task_index])
 
         def eventFilter(self, source, event) -> bool:
             if source is self.table and event.type() == QEvent.KeyPress and event.key() == Qt.Key_Space:
@@ -4567,6 +4627,7 @@ def run_qt_shell() -> int:
             return super().eventFilter(source, event)
 
         def toggle_task_indices(self, indices: List[int]) -> None:
+            """Toggle selected tasks between Disabled and Ready with session queue order."""
             disabled_tasks = []
             changed = False
             self._ensure_state()
@@ -4576,6 +4637,7 @@ def run_qt_shell() -> int:
                 state = self.state[idx] if idx < len(self.state) else default_task_state()
                 if state.get("status", "Ready").startswith(TaskRuntimeStatus.RENDERING):
                     continue
+
                 task = self.settings.tasks[idx]
                 if task.enabled:
                     task.enabled = False
@@ -4584,13 +4646,16 @@ def run_qt_shell() -> int:
                 else:
                     task.enabled = True
                     self._assign_order_to_task(task)
+
                 self.state[idx] = default_task_state()
                 changed = True
+
             if disabled_tasks:
                 self.runtime_queue.remove_tasks(disabled_tasks)
             if changed:
                 self._compact_queue_order()
                 self.refresh_queue_view()
+                self._append_log(f"[Qt] Toggled {len(set(indices))} task(s).")
 
         def toggle_selected(self) -> None:
             self.toggle_task_indices(self.selected_indices())
