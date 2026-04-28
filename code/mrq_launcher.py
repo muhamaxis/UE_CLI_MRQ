@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.8.1"
+APP_VERSION = "1.8.2"
 
 UI_THEME = {
     "bg": "#111318",
@@ -3323,7 +3323,9 @@ def run_qt_shell() -> int:
             toolbar = QHBoxLayout(self.queue_toolbar_panel)
             toolbar.setContentsMargins(0, 0, 0, 0)
             for text, callback in (
-                ("Add Job", self.load_task_dialog),
+                ("Add Job", self.add_task_dialog),
+                ("Load Task(s)", self.load_task_dialog),
+                ("Save Selected", self.save_selected_tasks_dialog),
                 ("Edit", self.edit_selected_task),
                 ("Duplicate", self.duplicate_selected),
                 ("Remove", self.remove_selected),
@@ -3394,6 +3396,8 @@ def run_qt_shell() -> int:
             diagnostics_actions = QHBoxLayout()
             for text, callback in (
                 ("Clear Status", self.clear_status_selected),
+                ("Load Task(s)", self.load_task_dialog),
+                ("Save Selected Task(s)", self.save_selected_tasks_dialog),
                 ("Save Queue Log", self.save_queue_log),
                 ("Open Logs Folder", self.open_logs_folder),
                 ("Open Last Log", self.open_last_log_for_selected),
@@ -3793,6 +3797,19 @@ def run_qt_shell() -> int:
                 return
             self._append_log(f"[Qt] Saved queue: {path}")
 
+        def _default_task_filename(self, task: RenderTask) -> str:
+            return f"{soft_name(task.level)}__{soft_name(task.sequence)}__{soft_name(task.preset)}.task.json"
+
+        def add_task_dialog(self) -> None:
+            dialog = QtTaskEditor(self)
+            if dialog.exec() != QDialog.Accepted or dialog.result is None:
+                return
+            self.settings.tasks.append(dialog.result)
+            self.state.append(default_task_state())
+            self.refresh_queue_view()
+            self._select_task_index(len(self.settings.tasks) - 1)
+            self._append_log("[Qt] Added task.")
+
         def load_task_dialog(self) -> None:
             paths, _ = QFileDialog.getOpenFileNames(self, "Load Task JSON(s)", "", "JSON (*.json);;All Files (*.*)")
             if not paths:
@@ -3809,6 +3826,46 @@ def run_qt_shell() -> int:
             self._ensure_state()
             self.refresh_queue_view()
             self._append_log(f"[Qt] Loaded {loaded} task(s).")
+
+        def save_selected_tasks_dialog(self) -> None:
+            indices = self.selected_indices()
+            if not indices:
+                QMessageBox.warning(self, "Save Task", "Select at least one task in the table.")
+                return
+            if len(indices) == 1:
+                task = self.settings.tasks[indices[0]]
+                path, _ = QFileDialog.getSaveFileName(
+                    self,
+                    "Save Task JSON",
+                    self._default_task_filename(task),
+                    "JSON (*.json);;All Files (*.*)",
+                )
+                if not path:
+                    return
+                if not path.lower().endswith(".json"):
+                    path += ".json"
+                try:
+                    PersistenceRepository.save_task(path, task)
+                except Exception as exc:
+                    QMessageBox.critical(self, "Save Task", str(exc))
+                    return
+                self._append_log(f"[Qt] Saved task: {os.path.basename(path)}")
+                return
+
+            folder = QFileDialog.getExistingDirectory(self, "Select folder to save tasks")
+            if not folder:
+                return
+            saved = 0
+            for idx in indices:
+                task = self.settings.tasks[idx]
+                path = os.path.join(folder, self._default_task_filename(task))
+                try:
+                    PersistenceRepository.save_task(path, task)
+                    saved += 1
+                except Exception as exc:
+                    QMessageBox.critical(self, "Save Task", f"{os.path.basename(path)}: {exc}")
+                    return
+            self._append_log(f"[Qt] Saved {saved} task file(s) to {folder}")
 
         def duplicate_selected(self) -> None:
             for idx in sorted(self.selected_indices(), reverse=True):
