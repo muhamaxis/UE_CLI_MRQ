@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.8.3"
+APP_VERSION = "1.8.4"
 
 UI_THEME = {
     "bg": "#111318",
@@ -2919,11 +2919,11 @@ def run_qt_shell() -> int:
     """Launch the PySide6 queue workspace without replacing the Tkinter launcher."""
     try:
         from PySide6.QtCore import Qt, QTimer
-        from PySide6.QtGui import QColor, QBrush, QPalette
+        from PySide6.QtGui import QColor, QBrush, QPalette, QFont
         from PySide6.QtWidgets import (
             QApplication, QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
             QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QProgressBar,
-            QSpinBox, QStatusBar, QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
+            QHeaderView, QSpinBox, QStatusBar, QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
         )
     except ImportError as exc:
         print("PySide6 is required for the Qt shell. Install it with: pip install PySide6")
@@ -2931,112 +2931,227 @@ def run_qt_shell() -> int:
         return 1
 
     def apply_qt_dark_theme(app: QApplication) -> None:
-        """Apply the shared dark launcher palette to the Qt shell."""
+        """Apply an Apple-inspired dark production theme to the Qt shell."""
         try:
             app.setStyle("Fusion")
         except Exception:
             pass
 
+        apple = {
+            "bg": "#0B0D12",
+            "card": "#151820",
+            "card_alt": "#1A1F2A",
+            "control": "#202634",
+            "control_hover": "#2A3344",
+            "field": "#0F1218",
+            "border": "#2B3444",
+            "border_soft": "#202838",
+            "text": "#F5F7FA",
+            "muted": "#9AA6B8",
+            "muted2": "#728096",
+            "accent": "#0A84FF",
+            "accent_hover": "#2696FF",
+            "accent_soft": "#123B67",
+            "danger": "#FF453A",
+            "success": "#32D74B",
+        }
+
         palette = QPalette()
-        palette.setColor(QPalette.Window, QColor(UI_THEME["bg"]))
-        palette.setColor(QPalette.WindowText, QColor(UI_THEME["text"]))
-        palette.setColor(QPalette.Base, QColor(UI_THEME["entry"]))
-        palette.setColor(QPalette.AlternateBase, QColor(UI_THEME["panel_alt"]))
-        palette.setColor(QPalette.ToolTipBase, QColor(UI_THEME["panel_soft"]))
-        palette.setColor(QPalette.ToolTipText, QColor(UI_THEME["text"]))
-        palette.setColor(QPalette.Text, QColor(UI_THEME["text"]))
-        palette.setColor(QPalette.Button, QColor(UI_THEME["panel_soft"]))
-        palette.setColor(QPalette.ButtonText, QColor(UI_THEME["text"]))
+        palette.setColor(QPalette.Window, QColor(apple["bg"]))
+        palette.setColor(QPalette.WindowText, QColor(apple["text"]))
+        palette.setColor(QPalette.Base, QColor(apple["field"]))
+        palette.setColor(QPalette.AlternateBase, QColor(apple["card_alt"]))
+        palette.setColor(QPalette.ToolTipBase, QColor(apple["card_alt"]))
+        palette.setColor(QPalette.ToolTipText, QColor(apple["text"]))
+        palette.setColor(QPalette.Text, QColor(apple["text"]))
+        palette.setColor(QPalette.Button, QColor(apple["control"]))
+        palette.setColor(QPalette.ButtonText, QColor(apple["text"]))
         palette.setColor(QPalette.BrightText, QColor("#FFFFFF"))
-        palette.setColor(QPalette.Highlight, QColor(UI_THEME["accent_soft"]))
+        palette.setColor(QPalette.Highlight, QColor(apple["accent"]))
         palette.setColor(QPalette.HighlightedText, QColor("#FFFFFF"))
-        palette.setColor(QPalette.Disabled, QPalette.Text, QColor(UI_THEME["muted"]))
-        palette.setColor(QPalette.Disabled, QPalette.ButtonText, QColor(UI_THEME["muted"]))
+        palette.setColor(QPalette.Disabled, QPalette.Text, QColor(apple["muted2"]))
+        palette.setColor(QPalette.Disabled, QPalette.ButtonText, QColor(apple["muted2"]))
         app.setPalette(palette)
 
         app.setStyleSheet(f"""
             QWidget {{
-                background-color: {UI_THEME['bg']};
-                color: {UI_THEME['text']};
-                selection-background-color: {UI_THEME['accent_soft']};
+                background-color: {apple['bg']};
+                color: {apple['text']};
+                font-family: "Segoe UI";
+                font-size: 10pt;
+                selection-background-color: {apple['accent']};
                 selection-color: #FFFFFF;
             }}
             QFrame {{
-                background-color: {UI_THEME['panel']};
-                border: 1px solid {UI_THEME['border']};
-                border-radius: 6px;
+                background: transparent;
+                border: none;
+            }}
+            QFrame#Card {{
+                background-color: {apple['card']};
+                border: 1px solid {apple['border_soft']};
+                border-radius: 14px;
+            }}
+            QFrame#OptionStrip, QFrame#ToolbarStrip {{
+                background-color: {apple['card_alt']};
+                border: 1px solid {apple['border_soft']};
+                border-radius: 12px;
             }}
             QLabel {{
                 background: transparent;
                 border: none;
             }}
+            QLabel#TitleLabel {{
+                color: {apple['text']};
+                font-size: 22px;
+                font-weight: 800;
+            }}
+            QLabel#SectionTitle {{
+                color: {apple['text']};
+                font-size: 13px;
+                font-weight: 700;
+                padding-bottom: 2px;
+            }}
+            QLabel#SubtitleLabel, QLabel#MutedLabel {{
+                color: {apple['muted']};
+                font-size: 9pt;
+            }}
+            QLabel#InspectorField {{
+                background-color: {apple['field']};
+                color: {apple['text']};
+                border: 1px solid {apple['border_soft']};
+                border-radius: 10px;
+                padding: 8px 10px;
+                line-height: 120%;
+            }}
             QPushButton {{
-                background-color: {UI_THEME['panel_soft']};
-                color: {UI_THEME['text']};
-                border: 1px solid {UI_THEME['border']};
-                border-radius: 5px;
-                padding: 6px 10px;
+                background-color: {apple['control']};
+                color: {apple['text']};
+                border: 1px solid {apple['border_soft']};
+                border-radius: 10px;
+                padding: 7px 13px;
+                font-weight: 600;
             }}
             QPushButton:hover {{
-                background-color: {UI_THEME['accent_soft']};
-                border-color: {UI_THEME['accent']};
+                background-color: {apple['control_hover']};
+                border-color: {apple['border']};
             }}
             QPushButton:pressed {{
-                background-color: {UI_THEME['accent']};
+                background-color: {apple['accent_soft']};
+            }}
+            QPushButton[role="primary"] {{
+                background-color: {apple['accent']};
+                border-color: {apple['accent']};
                 color: #FFFFFF;
             }}
+            QPushButton[role="primary"]:hover {{
+                background-color: {apple['accent_hover']};
+                border-color: {apple['accent_hover']};
+            }}
+            QPushButton[role="danger"] {{
+                background-color: #3A1F24;
+                border-color: #6B2B32;
+                color: #FFB3B0;
+            }}
+            QPushButton[role="ghost"] {{
+                background-color: transparent;
+                border-color: transparent;
+                color: {apple['muted']};
+            }}
             QLineEdit, QTextEdit, QSpinBox, QComboBox {{
-                background-color: {UI_THEME['entry']};
-                color: {UI_THEME['text']};
-                border: 1px solid {UI_THEME['border']};
-                border-radius: 4px;
-                padding: 4px;
+                background-color: {apple['field']};
+                color: {apple['text']};
+                border: 1px solid {apple['border_soft']};
+                border-radius: 9px;
+                padding: 6px 8px;
             }}
             QLineEdit:focus, QTextEdit:focus, QSpinBox:focus, QComboBox:focus {{
-                border-color: {UI_THEME['accent']};
+                border-color: {apple['accent']};
+            }}
+            QLineEdit::placeholder {{
+                color: {apple['muted2']};
             }}
             QCheckBox {{
                 background: transparent;
                 border: none;
-                spacing: 6px;
+                spacing: 8px;
+                color: {apple['text']};
+            }}
+            QCheckBox::indicator {{
+                width: 16px;
+                height: 16px;
+                border-radius: 5px;
+                border: 1px solid {apple['border']};
+                background-color: {apple['field']};
+            }}
+            QCheckBox::indicator:checked {{
+                background-color: {apple['accent']};
+                border-color: {apple['accent']};
             }}
             QTableWidget {{
-                background-color: {UI_THEME['panel']};
-                alternate-background-color: {UI_THEME['panel_alt']};
-                color: {UI_THEME['text']};
-                gridline-color: {UI_THEME['border']};
-                border: 1px solid {UI_THEME['border']};
-                border-radius: 6px;
+                background-color: {apple['card']};
+                alternate-background-color: {apple['card_alt']};
+                color: {apple['text']};
+                gridline-color: transparent;
+                border: 1px solid {apple['border_soft']};
+                border-radius: 12px;
+                padding: 4px;
             }}
             QHeaderView::section {{
-                background-color: {UI_THEME['panel_soft']};
-                color: {UI_THEME['text']};
-                border: 1px solid {UI_THEME['border']};
-                padding: 6px;
+                background-color: {apple['card_alt']};
+                color: {apple['muted']};
+                border: none;
+                border-bottom: 1px solid {apple['border_soft']};
+                padding: 8px 10px;
                 font-weight: 700;
             }}
             QTableWidget::item {{
-                padding: 4px;
+                border: none;
+                padding: 7px 9px;
             }}
             QTableWidget::item:selected {{
-                background-color: {UI_THEME['accent_soft']};
+                background-color: {apple['accent_soft']};
                 color: #FFFFFF;
             }}
             QProgressBar {{
-                background-color: {UI_THEME['entry']};
-                color: {UI_THEME['text']};
-                border: 1px solid {UI_THEME['border']};
-                border-radius: 4px;
+                background-color: {apple['field']};
+                color: {apple['muted']};
+                border: 1px solid {apple['border_soft']};
+                border-radius: 9px;
                 text-align: center;
+                height: 18px;
             }}
             QProgressBar::chunk {{
-                background-color: {UI_THEME['accent']};
-                border-radius: 3px;
+                background-color: {apple['accent']};
+                border-radius: 8px;
             }}
             QStatusBar {{
-                background-color: {UI_THEME['panel_alt']};
-                color: {UI_THEME['muted']};
-                border-top: 1px solid {UI_THEME['border']};
+                background-color: {apple['card']};
+                color: {apple['muted']};
+                border-top: 1px solid {apple['border_soft']};
+            }}
+            QScrollBar:vertical {{
+                background: {apple['card']};
+                width: 12px;
+                margin: 2px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {apple['control_hover']};
+                border-radius: 6px;
+                min-height: 28px;
+            }}
+            QScrollBar:horizontal {{
+                background: {apple['card']};
+                height: 12px;
+                margin: 2px;
+            }}
+            QScrollBar::handle:horizontal {{
+                background: {apple['control_hover']};
+                border-radius: 6px;
+                min-width: 28px;
+            }}
+            QScrollBar::add-line, QScrollBar::sub-line {{
+                width: 0px;
+                height: 0px;
             }}
         """)
 
@@ -3180,8 +3295,8 @@ def run_qt_shell() -> int:
             self._normal_geometry = None
             self.inspector_labels = {}
             self.setWindowTitle(f"MRQ Launcher (Qt Shell) ver {APP_VERSION}")
-            self.resize(1280, 760)
-            self.full_minimum_size = (900, 560)
+            self.resize(1420, 860)
+            self.full_minimum_size = (1120, 680)
             self.minimal_minimum_size = (560, 360)
             self.setMinimumSize(*self.full_minimum_size)
             self._build_ui()
@@ -3193,8 +3308,8 @@ def run_qt_shell() -> int:
         def _build_ui(self) -> None:
             root = QWidget(self)
             root_layout = QVBoxLayout(root)
-            root_layout.setContentsMargins(12, 12, 12, 12)
-            root_layout.setSpacing(8)
+            root_layout.setContentsMargins(18, 18, 18, 18)
+            root_layout.setSpacing(14)
             self.setCentralWidget(root)
             self.header_panel = self._build_header()
             root_layout.addWidget(self.header_panel)
@@ -3202,7 +3317,7 @@ def run_qt_shell() -> int:
             self.minimal_header.setVisible(False)
             root_layout.addWidget(self.minimal_header)
             body = QHBoxLayout()
-            body.setSpacing(8)
+            body.setSpacing(14)
             self.queue_panel = self._build_queue_area()
             self.inspector_panel = self._build_inspector_area()
             body.addWidget(self.queue_panel, 3)
@@ -3219,8 +3334,24 @@ def run_qt_shell() -> int:
 
         def _panel(self) -> QFrame:
             panel = QFrame(self)
+            panel.setObjectName("Card")
             panel.setFrameShape(QFrame.StyledPanel)
             return panel
+
+        def _mark_button(self, button: QPushButton, role: str = "secondary") -> QPushButton:
+            """Assign a visual role used by the shared Qt stylesheet."""
+            button.setProperty("role", role)
+            return button
+
+        def _section_label(self, text: str) -> QLabel:
+            label = QLabel(text)
+            label.setObjectName("SectionTitle")
+            return label
+
+        def _muted_label(self, text: str) -> QLabel:
+            label = QLabel(text)
+            label.setObjectName("MutedLabel")
+            return label
 
         def _status_colors_for_task(self, task: RenderTask, state: dict) -> tuple[str, str, str]:
             """Return row/status colors matching the existing launcher status palette."""
@@ -3254,17 +3385,16 @@ def run_qt_shell() -> int:
             top_row = QHBoxLayout()
             title_block = QVBoxLayout()
             title = QLabel("MRQ Launcher CLI")
-            title.setStyleSheet("font-size: 20px; font-weight: 700;")
-            subtitle = QLabel("Qt runtime workspace")
-            subtitle.setStyleSheet("color: #8a94a6;")
+            title.setObjectName("TitleLabel")
+            subtitle = self._muted_label("Qt runtime workspace")
             title_block.addWidget(title)
             title_block.addWidget(subtitle)
             top_row.addLayout(title_block, 1)
-            load_button = QPushButton("Load Queue")
+            load_button = self._mark_button(QPushButton("Load Queue"))
             load_button.clicked.connect(self.load_queue_dialog)
-            save_button = QPushButton("Save Queue")
+            save_button = self._mark_button(QPushButton("Save Queue"))
             save_button.clicked.connect(self.save_queue_dialog)
-            minimal_button = QPushButton("Minimal Mode")
+            minimal_button = self._mark_button(QPushButton("Minimal Mode"), "primary")
             minimal_button.clicked.connect(self.enter_minimal_mode)
             top_row.addWidget(load_button)
             top_row.addWidget(save_button)
@@ -3276,7 +3406,7 @@ def run_qt_shell() -> int:
             self.ue_path_edit = QLineEdit(self.settings.ue_cmd)
             self.ue_path_edit.textChanged.connect(self._on_ue_path_changed)
             path_row.addWidget(self.ue_path_edit, 1)
-            browse_button = QPushButton("Browse")
+            browse_button = self._mark_button(QPushButton("Browse"))
             browse_button.clicked.connect(self.browse_unreal_cmd)
             path_row.addWidget(browse_button)
             layout.addLayout(path_row)
@@ -3285,10 +3415,11 @@ def run_qt_shell() -> int:
 
         def _build_render_options_panel(self, parent_layout: QVBoxLayout) -> None:
             options_panel = QFrame(self)
+            options_panel.setObjectName("OptionStrip")
             options_layout = QGridLayout(options_panel)
-            options_layout.setContentsMargins(0, 0, 0, 0)
-            options_layout.setHorizontalSpacing(8)
-            options_layout.setVerticalSpacing(6)
+            options_layout.setContentsMargins(12, 12, 12, 12)
+            options_layout.setHorizontalSpacing(12)
+            options_layout.setVerticalSpacing(10)
 
             self.retries_spin = QSpinBox(options_panel)
             self.retries_spin.setRange(0, 3)
@@ -3432,18 +3563,16 @@ def run_qt_shell() -> int:
             panel = self._panel()
             layout = QHBoxLayout(panel)
             title_block = QVBoxLayout()
-            title = QLabel("Minimal Mode")
-            title.setStyleSheet("font-size: 18px; font-weight: 700;")
-            subtitle = QLabel("Execution only view with compact columns.")
-            subtitle.setStyleSheet("color: #8a94a6;")
+            title = self._section_label("Minimal Mode")
+            subtitle = self._muted_label("Execution only view with compact columns.")
             title_block.addWidget(title)
             title_block.addWidget(subtitle)
             layout.addLayout(title_block, 1)
-            stop_current = QPushButton("Stop Current")
+            stop_current = self._mark_button(QPushButton("Stop Current"))
             stop_current.clicked.connect(self.cancel_current)
-            stop_all = QPushButton("Stop All")
+            stop_all = self._mark_button(QPushButton("Stop All"), "danger")
             stop_all.clicked.connect(self.cancel_all)
-            exit_button = QPushButton("Exit Minimal Mode")
+            exit_button = self._mark_button(QPushButton("Exit Minimal Mode"), "primary")
             exit_button.clicked.connect(self.exit_minimal_mode)
             layout.addWidget(stop_current)
             layout.addWidget(stop_all)
@@ -3453,11 +3582,13 @@ def run_qt_shell() -> int:
         def _build_queue_area(self) -> QFrame:
             panel = self._panel()
             layout = QVBoxLayout(panel)
-            self.queue_title_label = QLabel("Render Queue")
+            self.queue_title_label = self._section_label("Render Queue")
             layout.addWidget(self.queue_title_label)
             self.queue_toolbar_panel = QFrame(panel)
+            self.queue_toolbar_panel.setObjectName("ToolbarStrip")
             toolbar = QHBoxLayout(self.queue_toolbar_panel)
-            toolbar.setContentsMargins(0, 0, 0, 0)
+            toolbar.setContentsMargins(10, 10, 10, 10)
+            toolbar.setSpacing(8)
             for text, callback in (
                 ("Add Job", self.add_task_dialog),
                 ("Load Task(s)", self.load_task_dialog),
@@ -3469,7 +3600,7 @@ def run_qt_shell() -> int:
                 ("Move Down", lambda: self.move_selected(1)),
                 ("Toggle", self.toggle_selected),
             ):
-                button = QPushButton(text)
+                button = self._mark_button(QPushButton(text))
                 button.clicked.connect(callback)
                 toolbar.addWidget(button)
             toolbar.addStretch(1)
@@ -3483,6 +3614,10 @@ def run_qt_shell() -> int:
             self.table.setHorizontalHeaderLabels(list(self.COLUMNS))
             self.table.setAlternatingRowColors(True)
             self.table.verticalHeader().setVisible(False)
+            self.table.verticalHeader().setDefaultSectionSize(38)
+            self.table.horizontalHeader().setStretchLastSection(False)
+            self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+            self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
             self.table.setShowGrid(False)
             self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
             self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
@@ -3495,7 +3630,8 @@ def run_qt_shell() -> int:
         def _build_inspector_area(self) -> QFrame:
             panel = self._panel()
             layout = QVBoxLayout(panel)
-            layout.addWidget(QLabel("Job Inspector"))
+            layout.setSpacing(8)
+            layout.addWidget(self._section_label("Job Inspector"))
             for key, text in (
                 ("job", "Job Name: No selection"), ("enabled", "Enabled: -"),
                 ("project", "Project: -"), ("level", "Level: -"),
@@ -3503,11 +3639,12 @@ def run_qt_shell() -> int:
                 ("output", "Output Directory: -"), ("validation", "Validation: -"),
             ):
                 label = QLabel(text)
+                label.setObjectName("InspectorField")
                 label.setWordWrap(True)
                 self.inspector_labels[key] = label
                 layout.addWidget(label)
             layout.addStretch(1)
-            copy_button = QPushButton("Copy Command")
+            copy_button = self._mark_button(QPushButton("Copy Command"), "primary")
             copy_button.clicked.connect(self.copy_command_preview)
             layout.addWidget(copy_button)
             return panel
@@ -3520,12 +3657,13 @@ def run_qt_shell() -> int:
                 ("Render Enabled", self.render_enabled), ("Render Selected", self.render_selected),
                 ("Queue Selected", self.queue_selected_or_enabled), ("Render All", self.render_all),
             ):
-                button = QPushButton(text)
+                role = "primary" if text == "Render Enabled" else "secondary"
+                button = self._mark_button(QPushButton(text), role)
                 button.clicked.connect(callback)
                 controls.addWidget(button)
-            stop_current = QPushButton("Stop Current Render")
+            stop_current = self._mark_button(QPushButton("Stop Current Render"))
             stop_current.clicked.connect(self.cancel_current)
-            stop_all = QPushButton("Stop All")
+            stop_all = self._mark_button(QPushButton("Stop All"), "danger")
             stop_all.clicked.connect(self.cancel_all)
             controls.addWidget(stop_current)
             controls.addWidget(stop_all)
@@ -3542,7 +3680,7 @@ def run_qt_shell() -> int:
                 ("Open Last Log", self.open_last_log_for_selected),
                 ("Copy Command", self.copy_command_preview),
             ):
-                button = QPushButton(text)
+                button = self._mark_button(QPushButton(text))
                 button.clicked.connect(callback)
                 diagnostics_actions.addWidget(button)
             diagnostics_actions.addStretch(1)
@@ -3565,8 +3703,10 @@ def run_qt_shell() -> int:
             self.command_preview = QTextEdit(panel)
             self.command_preview.setReadOnly(True)
             self.command_preview.setPlaceholderText("Select a task to inspect the generated command line.")
+            self.command_preview.setMinimumHeight(150)
             self.log_view = QTextEdit(panel)
             self.log_view.setReadOnly(True)
+            self.log_view.setMinimumHeight(150)
             diagnostics.addWidget(self.command_preview, 1)
             diagnostics.addWidget(self.log_view, 1)
             layout.addLayout(diagnostics)
