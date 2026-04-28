@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.10.2"
+APP_VERSION = "1.10.4"
 
 UI_THEME = {
     "bg": "#111318",
@@ -48,6 +48,7 @@ STATUS_PILL_THEME = {
 }
 
 APP_ICON_RELATIVE_PATH = "resources/app_icon.ico"
+APP_HEADER_LOGO_RELATIVE_PATH = "resources/mrq_launcher_logo_167.png"
 # -------------------------------------------------
 # Helpers
 # -------------------------------------------------
@@ -63,6 +64,11 @@ def resource_path(relative_path: str) -> str:
 def app_icon_path() -> str:
     """Return the preferred application icon path."""
     return resource_path(APP_ICON_RELATIVE_PATH)
+
+
+def app_header_logo_path() -> str:
+    """Return the header logo path used by full-size launcher views."""
+    return resource_path(APP_HEADER_LOGO_RELATIVE_PATH)
 
 
 def detect_default_unreal_cmd() -> str:
@@ -738,6 +744,7 @@ class MRQLauncher(tk.Tk):
         self.command_preview: Optional[tk.Text] = None
         self.inspector_vars = {}
         self.status_pill_widgets = {}
+        self.header_logo_image: Optional[tk.PhotoImage] = None
         self._empty_menu = tk.Menu(self, tearoff=0)
         self._build_ui()
         self.after(50, self._drain_queues)
@@ -807,6 +814,16 @@ class MRQLauncher(tk.Tk):
             self.iconbitmap(icon_path)
         except Exception:
             pass
+
+    def _load_header_logo_image(self) -> Optional[tk.PhotoImage]:
+        """Load the static header logo without adding image dependencies."""
+        logo_path = app_header_logo_path()
+        if not os.path.exists(logo_path):
+            return None
+        try:
+            return tk.PhotoImage(file=logo_path)
+        except Exception:
+            return None
 
     def _configure_styles(self):
         self.configure(bg=UI_THEME["bg"])
@@ -978,7 +995,23 @@ class MRQLauncher(tk.Tk):
         return wrapper
 
     def _build_header(self, parent):
-        top = tk.Frame(parent, bg=UI_THEME["panel"])
+        header_row = tk.Frame(parent, bg=UI_THEME["panel"])
+        header_row.pack(fill=tk.X)
+
+        self.header_logo_image = self._load_header_logo_image()
+        if self.header_logo_image is not None:
+            tk.Label(
+                header_row,
+                image=self.header_logo_image,
+                bg=UI_THEME["panel"],
+                bd=0,
+                highlightthickness=0,
+            ).pack(side=tk.LEFT, padx=(0, self._s(14)), anchor="n")
+
+        header_content = tk.Frame(header_row, bg=UI_THEME["panel"])
+        header_content.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        top = tk.Frame(header_content, bg=UI_THEME["panel"])
         top.pack(fill=tk.X)
 
         title_block = tk.Frame(top, bg=UI_THEME["panel"])
@@ -999,7 +1032,7 @@ class MRQLauncher(tk.Tk):
         self._make_button(actions, "Save Queue", self.save_json_dialog).pack(side=tk.LEFT, padx=(0, 6))
         self._make_button(actions, "Save Queue Log", self.save_queue_log).pack(side=tk.LEFT)
 
-        path_row = tk.Frame(parent, bg=UI_THEME["panel"])
+        path_row = tk.Frame(header_content, bg=UI_THEME["panel"])
         path_row.pack(fill=tk.X, pady=(14, 0))
 
         tk.Label(path_row, text="UnrealEditor-Cmd.exe", bg=UI_THEME["panel"], fg=UI_THEME["muted"], font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(0, 10))
@@ -1018,7 +1051,7 @@ class MRQLauncher(tk.Tk):
         self.var_extra = StringVar(value=self.settings.extra_cli)
         self.var_auto_minimal = tk.BooleanVar(value=self.settings.auto_minimal_on_render)
 
-        opts = tk.Frame(parent, bg=UI_THEME["panel"])
+        opts = tk.Frame(header_content, bg=UI_THEME["panel"])
         opts.pack(fill=tk.X, pady=(12, 0))
 
         tk.Label(opts, text="Retries", bg=UI_THEME["panel"], fg=UI_THEME["muted"], font=("Segoe UI", 9)).pack(side=tk.LEFT)
@@ -2945,7 +2978,7 @@ def run_qt_shell() -> int:
     """Launch the PySide6 queue workspace without replacing the Tkinter launcher."""
     try:
         from PySide6.QtCore import QEvent, Qt, QTimer
-        from PySide6.QtGui import QColor, QBrush, QIcon, QPalette, QFont, QPainter, QPen
+        from PySide6.QtGui import QColor, QBrush, QIcon, QPalette, QFont, QPainter, QPen, QPixmap
         from PySide6.QtWidgets import (
             QApplication, QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
             QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton,
@@ -3573,13 +3606,37 @@ def run_qt_shell() -> int:
             panel = self._panel()
             layout = QVBoxLayout(panel)
 
+            header_row = QHBoxLayout()
+            header_row.setSpacing(12)
+            layout.addLayout(header_row)
+
+            logo_path = app_header_logo_path()
+            if os.path.exists(logo_path):
+                logo_pixmap = QPixmap(logo_path)
+                if not logo_pixmap.isNull():
+                    logo_label = QLabel(panel)
+                    logo_size = 134
+                    logo_label.setFixedSize(logo_size, logo_size)
+                    logo_label.setPixmap(logo_pixmap.scaled(
+                        logo_size, logo_size, Qt.KeepAspectRatio, Qt.SmoothTransformation
+                    ))
+                    logo_label.setAlignment(Qt.AlignCenter)
+                    header_row.addWidget(logo_label, 0, Qt.AlignLeft | Qt.AlignTop)
+
+            right_column = QVBoxLayout()
+            right_column.setSpacing(10)
+            header_row.addLayout(right_column, 1)
+
             top_row = QHBoxLayout()
+            right_column.addLayout(top_row)
+
             title_block = QVBoxLayout()
             title = QLabel("MRQ Launcher CLI")
             title.setObjectName("TitleLabel")
             subtitle = self._muted_label("Qt runtime workspace")
             title_block.addWidget(title)
             title_block.addWidget(subtitle)
+            title_block.addStretch(1)
             top_row.addLayout(title_block, 1)
             load_button = self._mark_button(QPushButton("Load Queue"))
             load_button.clicked.connect(self.load_queue_dialog)
@@ -3590,9 +3647,7 @@ def run_qt_shell() -> int:
             top_row.addWidget(load_button)
             top_row.addWidget(save_button)
             top_row.addWidget(minimal_button)
-            layout.addLayout(top_row)
-
-            self._build_render_options_panel(layout)
+            self._build_render_options_panel(right_column)
             return panel
 
         def _build_render_options_panel(self, parent_layout: QVBoxLayout) -> None:

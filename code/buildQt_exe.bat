@@ -3,7 +3,7 @@ setlocal enableextensions enabledelayedexpansion
 
 REM ===== Config =====
 set NAME=MRQLauncherQT
-set VER=1.10.2
+set VER=1.10.4
 set LOG=build_qt_log.txt
 set QT_HOOK=_qt_runtime_hook.py
 
@@ -16,9 +16,11 @@ REM 2) BAT in code folder: UE_CLI_MRQ\code\buildQt_exe.bat
 if exist "code\mrq_launcher.py" (
   set MAIN=code\mrq_launcher.py
   set ICON=resources\app_icon.ico
+  set LOGO=resources\mrq_launcher_logo_167.png
 ) else (
   set MAIN=mrq_launcher.py
   set ICON=..\resources\app_icon.ico
+  set LOGO=..\resources\mrq_launcher_logo_167.png
 )
 
 if not exist "%MAIN%" (
@@ -32,9 +34,16 @@ if not exist "%ICON%" (
   goto :fail
 )
 
+if not exist "%LOGO%" (
+  echo [X] Header logo not found: %LOGO%
+  echo     Expected resources\mrq_launcher_logo_167.png in the project root.
+  goto :fail
+)
+
 REM Use absolute paths for PyInstaller resource embedding.
 for %%I in ("%MAIN%") do set MAIN_ABS=%%~fI
 for %%I in ("%ICON%") do set ICON_ABS=%%~fI
+for %%I in ("%LOGO%") do set LOGO_ABS=%%~fI
 
 REM ===== Clean =====
 for /d %%D in (build dist __pycache__) do if exist "%%D" rmdir /s /q "%%D"
@@ -63,6 +72,7 @@ python --version
 echo [i] Build version: %VER%
 echo [i] Main script: %MAIN_ABS%
 echo [i] App icon: %ICON_ABS%
+echo [i] Header logo: %LOGO_ABS%
 
 echo [i] Creating Qt runtime hook...
 (
@@ -87,6 +97,7 @@ pyinstaller ^
   --noconsole ^
   --icon "%ICON_ABS%" ^
   --add-data "%ICON_ABS%;resources" ^
+  --add-data "%LOGO_ABS%;resources" ^
   --runtime-hook "%QT_HOOK%" ^
   --collect-all PySide6 ^
   > "%LOG%" 2>&1
@@ -110,6 +121,7 @@ pyinstaller ^
   --noconsole ^
   --icon "%ICON_ABS%" ^
   --add-data "%ICON_ABS%;resources" ^
+  --add-data "%LOGO_ABS%;resources" ^
   --runtime-hook "%QT_HOOK%" ^
   --collect-all PySide6 ^
   >> "%LOG%" 2>&1
