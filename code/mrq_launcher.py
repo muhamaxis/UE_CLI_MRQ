@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.8.0"
+APP_VERSION = "1.8.1"
 
 UI_THEME = {
     "bg": "#111318",
@@ -3391,6 +3391,20 @@ def run_qt_shell() -> int:
             controls.addStretch(1)
             layout.addLayout(controls)
 
+            diagnostics_actions = QHBoxLayout()
+            for text, callback in (
+                ("Clear Status", self.clear_status_selected),
+                ("Save Queue Log", self.save_queue_log),
+                ("Open Logs Folder", self.open_logs_folder),
+                ("Open Last Log", self.open_last_log_for_selected),
+                ("Copy Command", self.copy_command_preview),
+            ):
+                button = QPushButton(text)
+                button.clicked.connect(callback)
+                diagnostics_actions.addWidget(button)
+            diagnostics_actions.addStretch(1)
+            layout.addLayout(diagnostics_actions)
+
             status_row = QHBoxLayout()
             self.current_task_label = QLabel("Current task: Idle")
             self.current_status_label = QLabel("Status: Idle")
@@ -3936,30 +3950,50 @@ def run_qt_shell() -> int:
                         self._append_log(f"[Qt] [{local_counter}] Invalid Extra CLI: {exc}")
                         break
                     start_time = time.time()
+                    start_dt = datetime.now()
+                    logfile = self._task_logfile(task)
+                    log_fp = None
                     self._current_global_idx = task_index
                     self.ui_events.put(TaskRuntimeEvent(TaskRuntimeEventType.TASK_STARTED, task_index, "Rendering 00:00:00", 0, start_time))
                     self._append_log(f"[Qt] [{local_counter}] Start try {attempt}/{retries + 1}: {' '.join(cmd)}")
                     try:
+                        log_fp = open(logfile, "a", encoding="utf-8")
+                        log_fp.write(f"CMD: {' '.join(cmd)}\n")
+                        log_fp.write(f"START: {start_dt.strftime('%Y-%m-%d %H:%M:%S')}\n")
                         process = self.process_controller.launch(cmd)
                     except Exception as exc:
+                        if log_fp:
+                            try:
+                                log_fp.write(f"FAILED TO START: {exc}\n")
+                                log_fp.close()
+                            except Exception:
+                                pass
                         self._append_log(f"[Qt] [{local_counter}] Failed to start: {exc}")
                         break
 
-                    def pump_stdout(proc: subprocess.Popen, idx: int) -> None:
+                    def pump_stdout(proc: subprocess.Popen, idx: int, fp) -> None:
                         try:
                             if proc.stdout:
                                 for line in proc.stdout:
                                     if self.stop_all:
                                         break
-                                    line = line.rstrip()
-                                    self._append_log(line)
-                                    progress = self._extract_progress(line)
+                                    clean_line = line.rstrip()
+                                    self._append_log(clean_line)
+                                    if fp:
+                                        fp.write(clean_line + "\n")
+                                    progress = self._extract_progress(clean_line)
                                     if progress is not None:
                                         self.ui_events.put(TaskRuntimeEvent(TaskRuntimeEventType.PROGRESS_UPDATED, idx, progress=progress))
                         except Exception as exc:
                             self._append_log(f"[Qt pump] {exc}")
+                        finally:
+                            if fp:
+                                try:
+                                    fp.flush()
+                                except Exception:
+                                    pass
 
-                    pump_thread = threading.Thread(target=pump_stdout, args=(process, task_index), daemon=True)
+                    pump_thread = threading.Thread(target=pump_stdout, args=(process, task_index, log_fp), daemon=True)
                     pump_thread.start()
                     while process.poll() is None and not self.stop_all:
                         elapsed = int(time.time() - start_time)
@@ -3970,6 +4004,18 @@ def run_qt_shell() -> int:
                     rc = process.wait()
                     self.process_controller.clear_if_current(process)
                     end_time = time.time()
+                    end_dt = datetime.now()
+                    try:
+                        pump_thread.join(timeout=0.2)
+                    except Exception:
+                        pass
+                    if log_fp:
+                        try:
+                            log_fp.write(f"END: {end_dt.strftime('%Y-%m-%d %H:%M:%S')}\n")
+                            log_fp.write(f"EXIT: {rc}\n")
+                            log_fp.close()
+                        except Exception:
+                            pass
                     self.ui_events.put(TaskRuntimeEvent(TaskRuntimeEventType.PROGRESS_UPDATED, task_index, end=end_time))
                     self._append_log(f"[Qt] [{local_counter}] Exit code: {rc}")
 
@@ -4000,6 +4046,104 @@ def run_qt_shell() -> int:
             self.worker_running = False
             self.ui_events.put(TaskRuntimeEvent(TaskRuntimeEventType.QUEUE_COMPLETED))
             self._append_log("[Qt] Queue complete.")
+
+        def _logs_dir(self) -> str:
+            return os.path.join(os.getcwd(), "mrq_logs")
+
+        def _task_logfile(self, task: RenderTask) -> str:
+            base = f"{soft_name(task.level)}__{soft_name(task.sequence)}__{soft_name(task.preset)}"
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            logs_dir = self._logs_dir()
+            os.makedirs(logs_dir, exist_ok=True)
+            return os.path.join(logs_dir, f"{timestamp}_{base}.log")
+
+        def _queue_log_default_path(self) -> str:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            logs_dir = self._logs_dir()
+            os.makedirs(logs_dir, exist_ok=True)
+            return os.path.join(logs_dir, f"Queue_Log_{timestamp}.log")
+
+        def _format_hms(self, seconds: Optional[int]) -> str:
+            if seconds is None:
+                return ""
+            seconds = max(0, int(seconds))
+            hours, rem = divmod(seconds, 3600)
+            minutes, secs = divmod(rem, 60)
+            return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+        def _collect_queue_log_rows(self) -> List[str]:
+            rows = ["Level / Sequence / Preset / Start / End / Duration"]
+            for idx, task in enumerate(self.settings.tasks):
+                state = self.state[idx] if idx < len(self.state) else {}
+                start_ts = state.get("start")
+                end_ts = state.get("end")
+                start_text = datetime.fromtimestamp(start_ts).strftime("%Y-%m-%d %H:%M:%S") if start_ts else ""
+                end_text = datetime.fromtimestamp(end_ts).strftime("%Y-%m-%d %H:%M:%S") if end_ts else ""
+                duration = int(end_ts - start_ts) if start_ts and end_ts else None
+                rows.append(
+                    f"{soft_name(task.level)} / {soft_name(task.sequence)} / {soft_name(task.preset)} / "
+                    f"{start_text} / {end_text} / {self._format_hms(duration)}"
+                )
+            return rows
+
+        def save_queue_log(self) -> None:
+            try:
+                path = self._queue_log_default_path()
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write("\n".join(self._collect_queue_log_rows()) + "\n")
+                self._append_log(f"[Qt Logs] Queue summary saved: {os.path.basename(path)}")
+            except Exception as exc:
+                QMessageBox.critical(self, "Save Queue Log", str(exc))
+
+        def _open_path(self, path: str) -> None:
+            try:
+                if os.name == "nt":
+                    os.startfile(path)
+                elif sys.platform == "darwin":
+                    subprocess.Popen(["open", path])
+                else:
+                    subprocess.Popen(["xdg-open", path])
+            except Exception as exc:
+                QMessageBox.critical(self, "Open Path", str(exc))
+
+        def open_logs_folder(self) -> None:
+            logs_dir = self._logs_dir()
+            os.makedirs(logs_dir, exist_ok=True)
+            self._open_path(logs_dir)
+
+        def open_last_log_for_selected(self) -> None:
+            task = self._selected_task()
+            if task is None:
+                QMessageBox.information(self, "Open Last Log", "Select a task first.")
+                return
+            logs_dir = self._logs_dir()
+            base = f"{soft_name(task.level)}__{soft_name(task.sequence)}__{soft_name(task.preset)}"
+            try:
+                files = [
+                    name for name in os.listdir(logs_dir)
+                    if name.endswith(".log") and name.endswith(f"{base}.log")
+                ]
+            except FileNotFoundError:
+                files = []
+            except Exception as exc:
+                QMessageBox.critical(self, "Open Last Log", str(exc))
+                return
+            if not files:
+                QMessageBox.information(self, "Open Last Log", "No logs found for selected task.")
+                return
+            files.sort(reverse=True)
+            self._open_path(os.path.join(logs_dir, files[0]))
+
+        def clear_status_selected(self) -> None:
+            indices = self.selected_indices()
+            if not indices:
+                QMessageBox.information(self, "Clear Status", "Select at least one task to clear its status.")
+                return
+            for idx in indices:
+                if 0 <= idx < len(self.state):
+                    self.state[idx] = default_task_state()
+            self.refresh_queue_view()
+            self._append_log(f"[Qt Status] Cleared status for {len(indices)} task(s).")
 
         def cancel_current(self) -> None:
             if self.process_controller.is_active():
