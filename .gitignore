@@ -7,3 +7,4 @@ code/MRQLauncherCLI.spec
 code/build_qt_log.txt
 code/MRQLauncherQT.spec
 resources/src/
+app/MRQLauncherCLI.exe
