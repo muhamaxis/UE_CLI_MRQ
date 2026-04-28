@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.9.1"
+APP_VERSION = "1.9.2"
 
 UI_THEME = {
     "bg": "#111318",
@@ -2922,7 +2922,7 @@ def run_qt_shell() -> int:
         from PySide6.QtGui import QColor, QBrush, QPalette, QFont, QPainter, QPen
         from PySide6.QtWidgets import (
             QApplication, QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
-            QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QProgressBar,
+            QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton,
             QHeaderView, QSizePolicy, QSpinBox, QSplitter, QStatusBar, QStyle, QStyledItemDelegate, QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
         )
     except ImportError as exc:
@@ -3157,18 +3157,6 @@ def run_qt_shell() -> int:
                 background-color: {apple['accent_soft']};
                 color: #FFFFFF;
             }}
-            QProgressBar {{
-                background-color: {apple['field']};
-                color: {apple['muted']};
-                border: 1px solid {apple['border_soft']};
-                border-radius: 9px;
-                text-align: center;
-                height: 18px;
-            }}
-            QProgressBar::chunk {{
-                background-color: {apple['accent']};
-                border-radius: 8px;
-            }}
             QStatusBar {{
                 background-color: {apple['card']};
                 color: {apple['muted']};
@@ -3366,11 +3354,9 @@ def run_qt_shell() -> int:
             self.diagnostics_log_expanded = False
             self.command_preview = None
             self.log_view = None
-            self.progress_bar = None
             self.current_task_label = None
             self.current_status_label = None
             self.session_time_label = None
-            self.minimal_progress_bar = None
             self.minimal_current_task_label = None
             self.minimal_current_status_label = None
             self.minimal_session_time_label = None
@@ -3863,12 +3849,9 @@ def run_qt_shell() -> int:
             self.current_task_label = QLabel("Current task: Idle")
             self.current_status_label = QLabel("Status: Idle")
             self.session_time_label = QLabel("Session total: 00:00:00")
-            self.progress_bar = QProgressBar(panel)
-            self.progress_bar.setRange(0, 100)
-            self.progress_bar.setValue(0)
             status_row.addWidget(self.current_task_label)
             status_row.addWidget(self.current_status_label)
-            status_row.addWidget(self.progress_bar, 1)
+            status_row.addStretch(1)
             status_row.addWidget(self.session_time_label)
             layout.addLayout(status_row)
 
@@ -3950,7 +3933,6 @@ def run_qt_shell() -> int:
             self.minimal_current_task_label = QLabel("Current task: Idle")
             self.minimal_current_status_label = QLabel("Status: Idle")
             self.minimal_session_time_label = QLabel("Session total: 00:00:00")
-            self.minimal_progress_bar = None
             layout.addWidget(self.minimal_session_time_label)
             layout.addWidget(QLabel("•"))
             layout.addWidget(self.minimal_current_task_label, 1)
@@ -4235,21 +4217,16 @@ def run_qt_shell() -> int:
                 state = self.state[current_idx]
                 current_task_text = f"Current task: {soft_name(task.sequence)}"
                 current_status_text = f"Status: {state.get('status', 'Ready')}"
-                progress = state.get("progress") or 0
             else:
                 current_task_text = "Current task: Idle"
                 current_status_text = "Status: Idle"
-                progress = 0
 
             self.current_task_label.setText(current_task_text)
             self.current_status_label.setText(current_status_text)
-            self.progress_bar.setValue(int(progress))
             if self.minimal_current_task_label:
                 self.minimal_current_task_label.setText(current_task_text)
             if self.minimal_current_status_label:
                 self.minimal_current_status_label.setText(current_status_text)
-            if self.minimal_progress_bar:
-                self.minimal_progress_bar.setValue(int(progress))
 
         def _update_session_runtime(self) -> None:
             for idx, state in enumerate(self.state):
