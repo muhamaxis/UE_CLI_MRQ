@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.9.8"
+APP_VERSION = "1.9.9"
 
 UI_THEME = {
     "bg": "#111318",
@@ -3913,7 +3913,7 @@ def run_qt_shell() -> int:
             menu.addSeparator()
             self._add_context_action(menu, "Move Up", lambda: self.move_selected(-1), can_move_single)
             self._add_context_action(menu, "Move Down", lambda: self.move_selected(1), can_move_single)
-            self._add_context_action(menu, "Rebuild Order From List", self.toggle_all_ready_disabled, has_tasks)
+            self._add_context_action(menu, "Toggle All Ready/Disabled", self.toggle_all_ready_disabled, has_tasks)
             menu.addSeparator()
             section = menu.addAction("Task Save/Load")
             section.setEnabled(False)
@@ -4682,7 +4682,7 @@ def run_qt_shell() -> int:
             self.toggle_task_indices(self.selected_indices())
 
         def toggle_all_ready_disabled(self) -> None:
-            """Rebuild the session render order from the current table order."""
+            """Toggle all non-rendering tasks between Disabled and ordered Ready state."""
             if not self.settings.tasks:
                 return
             if self.worker_running or self.process_controller.is_active():
@@ -4690,19 +4690,49 @@ def run_qt_shell() -> int:
                 return
 
             self._ensure_state()
-            self.runtime_queue.clear_pending(TaskRuntimeStatus.CANCELLED_QUEUE)
-            self.queue_order_by_task_id.clear()
-            order = 1
-            for idx, task in enumerate(self.settings.tasks):
+            toggleable_indices = []
+            for idx, _task in enumerate(self.settings.tasks):
                 state = self.state[idx] if idx < len(self.state) else default_task_state()
                 if state.get("status", "Ready").startswith(TaskRuntimeStatus.RENDERING):
                     continue
+                toggleable_indices.append(idx)
+
+            if not toggleable_indices:
+                return
+
+            # If every toggleable task is already active and ordered, the next
+            # Toggle All press disables all of them. Otherwise it rebuilds the
+            # session-only render order from the current list order.
+            all_active_and_ordered = all(
+                self.settings.tasks[idx].enabled
+                and id(self.settings.tasks[idx]) in self.queue_order_by_task_id
+                for idx in toggleable_indices
+            )
+
+            if all_active_and_ordered:
+                disabled_tasks = []
+                for idx in toggleable_indices:
+                    task = self.settings.tasks[idx]
+                    task.enabled = False
+                    self.state[idx] = default_task_state()
+                    disabled_tasks.append(task)
+                self.queue_order_by_task_id.clear()
+                self.runtime_queue.remove_tasks(disabled_tasks)
+                self.refresh_queue_view()
+                self._append_log(f"[Qt] Toggle All disabled {len(disabled_tasks)} task(s) and cleared session order.")
+                return
+
+            self.runtime_queue.clear_pending(TaskRuntimeStatus.CANCELLED_QUEUE)
+            self.queue_order_by_task_id.clear()
+            order = 1
+            for idx in toggleable_indices:
+                task = self.settings.tasks[idx]
                 task.enabled = True
                 self.state[idx] = default_task_state()
                 self.queue_order_by_task_id[id(task)] = order
                 order += 1
             self.refresh_queue_view()
-            self._append_log(f"[Qt] Rebuilt session queue order for {order - 1} task(s).")
+            self._append_log(f"[Qt] Toggle All enabled and ordered {order - 1} task(s).")
 
         def render_selected(self) -> None:
             tasks = self._collect(only_selected=True)
