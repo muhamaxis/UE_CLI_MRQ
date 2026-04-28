@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.9.4"
+APP_VERSION = "1.9.5"
 
 UI_THEME = {
     "bg": "#111318",
@@ -3333,7 +3333,7 @@ def run_qt_shell() -> int:
     class QtMRQShell(QMainWindow):
         """Qt queue workspace backed by shared task/settings/core models."""
 
-        COLUMNS = ("Status", "Level", "Sequence", "Preset", "Running Time", "Start", "End")
+        COLUMNS = ("Order", "Status", "Level", "Sequence", "Preset", "Running Time", "Start", "End")
 
         def __init__(self):
             super().__init__()
@@ -3349,6 +3349,7 @@ def run_qt_shell() -> int:
                 self._append_log,
             )
             self.worker_running = False
+            self.queue_order_by_task_id: dict[int, int] = {}
             self.stop_all = False
             self.cancel_current_requested = False
             self._current_global_idx: Optional[int] = None
@@ -3471,7 +3472,7 @@ def run_qt_shell() -> int:
         def _apply_status_item_style(self, item: QTableWidgetItem, task: RenderTask, state: dict, column: int) -> None:
             """Apply compact dark status styling without changing runtime state."""
             bg, fg, border = self._status_colors_for_task(task, state)
-            if column == 0:
+            if column == 1:
                 font = item.font()
                 font.setBold(True)
                 item.setFont(font)
@@ -3783,7 +3784,6 @@ def run_qt_shell() -> int:
                 ("Remove", self.remove_selected),
                 ("Move Up", lambda: self.move_selected(-1)),
                 ("Move Down", lambda: self.move_selected(1)),
-                ("Toggle", self.toggle_selected),
                 ("Toggle All", self.toggle_all_ready_disabled),
             ):
                 button = self._mark_button(QPushButton(text))
@@ -3803,17 +3803,18 @@ def run_qt_shell() -> int:
             self.table.verticalHeader().setDefaultSectionSize(38)
             self.table.horizontalHeader().setStretchLastSection(False)
             self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
-            self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+            self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
             self.table.setShowGrid(False)
             self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
             self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
             self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-            self.table.setItemDelegateForColumn(0, QtStatusPillDelegate(self.table))
-            self.table.setColumnWidth(0, 116)
+            self.table.setItemDelegateForColumn(1, QtStatusPillDelegate(self.table))
+            self.table.setColumnWidth(0, 68)
+            self.table.setColumnWidth(1, 116)
             self.table.setContextMenuPolicy(Qt.CustomContextMenu)
             self.table.customContextMenuRequested.connect(self._on_table_context_menu)
             self.table.itemSelectionChanged.connect(self._on_selection_changed)
-            self.table.doubleClicked.connect(lambda *_: self.toggle_selected())
+            self.table.doubleClicked.connect(self._on_table_double_clicked)
             layout.addWidget(self.table, 1)
             return panel
 
@@ -3858,8 +3859,7 @@ def run_qt_shell() -> int:
             menu.addSeparator()
             self._add_context_action(menu, "Move Up", lambda: self.move_selected(-1), can_move_single)
             self._add_context_action(menu, "Move Down", lambda: self.move_selected(1), can_move_single)
-            self._add_context_action(menu, "Toggle Selection", self.toggle_selected, has_selection)
-            self._add_context_action(menu, "Toggle All Ready/Disabled", self.toggle_all_ready_disabled, has_tasks)
+            self._add_context_action(menu, "Rebuild Order From List", self.toggle_all_ready_disabled, has_tasks)
             menu.addSeparator()
             section = menu.addAction("Task Save/Load")
             section.setEnabled(False)
@@ -4083,7 +4083,7 @@ def run_qt_shell() -> int:
         def _set_minimal_columns(self, enabled: bool) -> None:
             if not self.table:
                 return
-            for column in (5, 6):
+            for column in (6, 7):
                 self.table.setColumnHidden(column, enabled)
 
         def _resize_minimal_window(self) -> None:
@@ -4098,15 +4098,66 @@ def run_qt_shell() -> int:
                 self.state.append(default_task_state())
             if len(self.state) > len(self.settings.tasks):
                 self.state = self.state[:len(self.settings.tasks)]
+            self._prune_queue_order()
+
+        def _prune_queue_order(self) -> None:
+            valid_ids = {id(task) for task in self.settings.tasks}
+            for task_id in list(self.queue_order_by_task_id):
+                if task_id not in valid_ids:
+                    self.queue_order_by_task_id.pop(task_id, None)
+
+        def _queue_order_for_task(self, task: RenderTask) -> Optional[int]:
+            return self.queue_order_by_task_id.get(id(task))
+
+        def _next_queue_order(self) -> int:
+            return max(self.queue_order_by_task_id.values(), default=0) + 1
+
+        def _ordered_task_indices(self) -> List[int]:
+            ordered = []
+            for idx, task in enumerate(self.settings.tasks):
+                order = self._queue_order_for_task(task)
+                if task.enabled and order is not None:
+                    ordered.append((order, idx))
+            return [idx for _order, idx in sorted(ordered)]
+
+        def _sort_tasks_by_session_order(self, tasks: List[RenderTask]) -> List[RenderTask]:
+            positions = {id(task): pos for pos, task in enumerate(tasks)}
+            return sorted(
+                tasks,
+                key=lambda task: (
+                    self.queue_order_by_task_id.get(id(task), 10**9),
+                    positions.get(id(task), 10**9),
+                ),
+            )
+
+        def _assign_order_to_task(self, task: RenderTask) -> None:
+            if id(task) not in self.queue_order_by_task_id:
+                self.queue_order_by_task_id[id(task)] = self._next_queue_order()
+
+        def _compact_queue_order(self) -> None:
+            ordered = []
+            for idx, task in enumerate(self.settings.tasks):
+                order = self.queue_order_by_task_id.get(id(task))
+                if task.enabled and order is not None:
+                    ordered.append((order, idx, task))
+            self.queue_order_by_task_id.clear()
+            for new_order, (_old_order, _idx, task) in enumerate(sorted(ordered), start=1):
+                self.queue_order_by_task_id[id(task)] = new_order
 
         def _visible_task_indices(self) -> List[int]:
             query = self.filter_edit.text().strip().lower() if self.filter_edit else ""
             visible = []
-            for idx, task in enumerate(self.settings.tasks):
+            source_indices = self._ordered_task_indices() if self.minimal_mode else list(range(len(self.settings.tasks)))
+            for idx in source_indices:
+                task = self.settings.tasks[idx]
                 state = self.state[idx] if idx < len(self.state) else default_task_state()
-                haystack = " ".join([task.uproject, task.level, task.sequence, task.preset, task.output_dir, state.get("status", "Ready")]).lower()
-                if self.minimal_mode and not task.enabled:
+                order = self._queue_order_for_task(task)
+                if self.minimal_mode and order is None:
                     continue
+                haystack = " ".join([
+                    str(order or ""), task.uproject, task.level, task.sequence,
+                    task.preset, task.output_dir, state.get("status", "Ready"),
+                ]).lower()
                 if not query or query in haystack:
                     visible.append(idx)
             return visible
@@ -4121,7 +4172,9 @@ def run_qt_shell() -> int:
             for row, task_index in enumerate(visible_indices):
                 task = self.settings.tasks[task_index]
                 state = self.state[task_index] if task_index < len(self.state) else default_task_state()
+                order = self._queue_order_for_task(task)
                 values = (
+                    str(order) if order is not None else "",
                     get_status_display(state.get("status", "Ready"), task.enabled),
                     soft_name(task.level), soft_name(task.sequence), soft_name(task.preset),
                     format_runtime_display(state), format_state_time_display(state.get("start")),
@@ -4133,7 +4186,8 @@ def run_qt_shell() -> int:
                     self._apply_status_item_style(item, task, state, column)
                     self.table.setItem(row, column, item)
             self.table.resizeColumnsToContents()
-            self.table.setColumnWidth(0, 116)
+            self.table.setColumnWidth(0, 68)
+            self.table.setColumnWidth(1, 116)
             for row, task_index in enumerate(visible_indices):
                 if task_index in selected_indices:
                     self.table.selectRow(row)
@@ -4161,8 +4215,13 @@ def run_qt_shell() -> int:
             return self.settings.tasks[idx] if 0 <= idx < len(self.settings.tasks) else None
 
         def _collect(self, only_enabled: bool = False, only_selected: bool = False) -> List[RenderTask]:
-            tasks = [self.settings.tasks[idx] for idx in self.selected_indices()] if only_selected else list(self.settings.tasks)
-            return [task for task in tasks if task.enabled] if only_enabled else tasks
+            if only_selected:
+                tasks = [self.settings.tasks[idx] for idx in self.selected_indices()]
+                return self._sort_tasks_by_session_order(tasks)
+            if only_enabled:
+                tasks = [self.settings.tasks[idx] for idx in self._ordered_task_indices()]
+                return self._sort_tasks_by_session_order(tasks)
+            return list(self.settings.tasks)
 
         def _find_task_index_by_identity(self, task: RenderTask) -> Optional[int]:
             for i, existing in enumerate(self.settings.tasks):
@@ -4292,7 +4351,8 @@ def run_qt_shell() -> int:
             failed = sum(1 for state in self.state if state.get("status", "").startswith((TaskRuntimeStatus.FAILED, TaskRuntimeStatus.CANCELLED)))
             done = sum(1 for state in self.state if state.get("status", "").startswith(TaskRuntimeStatus.DONE))
             enabled = sum(1 for task in self.settings.tasks if task.enabled)
-            self.statusBar().showMessage(f"Tasks: {len(self.settings.tasks)} | Enabled: {enabled} | Queued: {queued} | Running: {running} | Done: {done} | Failed: {failed}")
+            ordered = len(self._ordered_task_indices())
+            self.statusBar().showMessage(f"Tasks: {len(self.settings.tasks)} | Enabled: {enabled} | Ordered: {ordered} | Queued: {queued} | Running: {running} | Done: {done} | Failed: {failed}")
             current_idx = self._current_global_idx if self._current_global_idx is not None else (self.selected_indices()[0] if self.selected_indices() else None)
             if current_idx is not None and 0 <= current_idx < len(self.settings.tasks):
                 task = self.settings.tasks[current_idx]
@@ -4348,6 +4408,7 @@ def run_qt_shell() -> int:
             self.settings.tasks = tasks
             self.state = [default_task_state() for _ in self.settings.tasks]
             self.runtime_queue.clear_pending(TaskRuntimeStatus.CANCELLED_QUEUE)
+            self.queue_order_by_task_id.clear()
             self.refresh_queue_view()
             self._append_log(f"[Qt] Loaded queue: {path}")
 
@@ -4448,7 +4509,10 @@ def run_qt_shell() -> int:
             indices = self.selected_indices()
             if not indices:
                 return
-            self.runtime_queue.remove_tasks([self.settings.tasks[idx] for idx in indices])
+            removed_tasks = [self.settings.tasks[idx] for idx in indices]
+            self.runtime_queue.remove_tasks(removed_tasks)
+            for task in removed_tasks:
+                self.queue_order_by_task_id.pop(id(task), None)
             for idx in sorted(indices, reverse=True):
                 del self.settings.tasks[idx]
                 del self.state[idx]
@@ -4474,8 +4538,13 @@ def run_qt_shell() -> int:
                     self.table.selectRow(row)
                     break
 
+        def _on_table_double_clicked(self, _index=None) -> None:
+            self.toggle_selected()
+
         def toggle_selected(self) -> None:
             disabled_tasks = []
+            changed = False
+            self._ensure_state()
             for idx in self.selected_indices():
                 state = self.state[idx] if idx < len(self.state) else default_task_state()
                 if state.get("status", "Ready").startswith(TaskRuntimeStatus.RENDERING):
@@ -4483,40 +4552,40 @@ def run_qt_shell() -> int:
                 task = self.settings.tasks[idx]
                 task.enabled = not task.enabled
                 self.state[idx] = default_task_state()
-                if not task.enabled:
+                changed = True
+                if task.enabled:
+                    self._assign_order_to_task(task)
+                else:
+                    self.queue_order_by_task_id.pop(id(task), None)
                     disabled_tasks.append(task)
             if disabled_tasks:
                 self.runtime_queue.remove_tasks(disabled_tasks)
+            if changed:
+                self._compact_queue_order()
             self.refresh_queue_view()
 
         def toggle_all_ready_disabled(self) -> None:
-            """Toggle every non-rendering task between Ready and Disabled."""
+            """Rebuild the session render order from the current table order."""
             if not self.settings.tasks:
+                return
+            if self.worker_running or self.process_controller.is_active():
+                QMessageBox.information(self, "Toggle All", "Stop the active render before rebuilding the queue order.")
                 return
 
             self._ensure_state()
-            toggleable_indices = [
-                idx for idx, state in enumerate(self.state)
-                if not state.get("status", "Ready").startswith(TaskRuntimeStatus.RENDERING)
-            ]
-            if not toggleable_indices:
-                self._append_log("[Qt] Toggle All skipped: all tasks are currently rendering.")
-                return
-
-            enable_all = any(not self.settings.tasks[idx].enabled for idx in toggleable_indices)
-            disabled_tasks = []
-            for idx in toggleable_indices:
-                task = self.settings.tasks[idx]
-                task.enabled = enable_all
+            self.runtime_queue.clear_pending(TaskRuntimeStatus.CANCELLED_QUEUE)
+            self.queue_order_by_task_id.clear()
+            order = 1
+            for idx, task in enumerate(self.settings.tasks):
+                state = self.state[idx] if idx < len(self.state) else default_task_state()
+                if state.get("status", "Ready").startswith(TaskRuntimeStatus.RENDERING):
+                    continue
+                task.enabled = True
                 self.state[idx] = default_task_state()
-                if not enable_all:
-                    disabled_tasks.append(task)
-
-            if disabled_tasks:
-                self.runtime_queue.remove_tasks(disabled_tasks)
+                self.queue_order_by_task_id[id(task)] = order
+                order += 1
             self.refresh_queue_view()
-            target = "Ready" if enable_all else "Disabled"
-            self._append_log(f"[Qt] Set {len(toggleable_indices)} task(s) to {target}.")
+            self._append_log(f"[Qt] Rebuilt session queue order for {order - 1} task(s).")
 
         def render_selected(self) -> None:
             tasks = self._collect(only_selected=True)
@@ -4528,7 +4597,7 @@ def run_qt_shell() -> int:
         def render_enabled(self) -> None:
             tasks = self._collect(only_enabled=True)
             if not tasks:
-                QMessageBox.information(self, "Render Enabled", "No enabled tasks to run.")
+                QMessageBox.information(self, "Render Enabled", "No ordered ready tasks to run. Double-click tasks or use Toggle All first.")
                 return
             self._run_queue(tasks)
 
@@ -4852,8 +4921,12 @@ def run_qt_shell() -> int:
             dialog = QtTaskEditor(self, old_task)
             if dialog.exec() != QDialog.Accepted or dialog.result is None:
                 return
+            previous_order = self.queue_order_by_task_id.pop(id(old_task), None)
             self.runtime_queue.remove_tasks([old_task])
             self.settings.tasks[idx] = dialog.result
+            if previous_order is not None:
+                self.queue_order_by_task_id[id(dialog.result)] = previous_order
+                dialog.result.enabled = True
             self.state[idx] = default_task_state()
             self.refresh_queue_view()
             self._select_task_index(idx)
