@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.10.13"
+APP_VERSION = "1.10.14"
 
 UI_THEME = {
     "bg": "#111318",
@@ -271,6 +271,25 @@ def summarize_validation_results(results: List[TaskValidationResult]) -> str:
     for result in results:
         counts[result.status] = counts.get(result.status, 0) + 1
     return " | ".join(f"{key}: {counts[key]}" for key in ("Ready", "Invalid", "Incomplete", "Unknown") if counts.get(key, 0))
+
+
+def validation_status_color(status: str) -> str:
+    """Return the shared color for queue validation indicators."""
+    palette = {
+        "Ready": "#35D04F",
+        "Incomplete": "#F0B429",
+        "Invalid": "#FF453A",
+        "Unknown": "#6E7F91",
+        "Not checked": "#4B5563",
+    }
+    return palette.get(status or "Not checked", palette["Not checked"])
+
+
+def validation_status_tooltip(result: Optional[TaskValidationResult]) -> str:
+    """Return a compact validation text for UI tooltips or diagnostics."""
+    if result is None:
+        return "Validation: -"
+    return result.display_text
 
 
 class TaskRuntimeStatus:
@@ -907,9 +926,10 @@ class MRQLauncher(tk.Tk):
         self.current_task_time_var = StringVar(value="Task time: —")
         self.current_progress_var = StringVar(value="0%")
         self.render_progress_value = tk.DoubleVar(value=0.0)
-        self.tree_columns = ("status", "level", "sequence", "preset", "runtime", "start", "end")
+        self.tree_columns = ("status", "validate", "level", "sequence", "preset", "runtime", "start", "end")
         self.tree_column_titles = {
             "status": "Status",
+            "validate": "Validate",
             "level": "Level",
             "sequence": "Sequence",
             "preset": "Preset",
@@ -919,6 +939,7 @@ class MRQLauncher(tk.Tk):
         }
         self.tree_column_defaults = {
             "status": self._s(180),
+            "validate": self._s(78),
             "level": self._s(150),
             "sequence": self._s(220),
             "preset": self._s(320),
@@ -927,7 +948,7 @@ class MRQLauncher(tk.Tk):
             "end": self._s(120),
         }
         self.full_tree_columns = self.tree_columns
-        self.minimal_tree_columns = ("status", "level", "sequence", "preset", "runtime")
+        self.minimal_tree_columns = ("status", "validate", "level", "sequence", "preset", "runtime")
         self.log_queue: "queue.Queue[str]" = queue.Queue()
         self.ui_queue: "queue.Queue[tuple]" = queue.Queue()
         self.state: List[dict] = []  # {status, progress, start, end}
@@ -945,6 +966,7 @@ class MRQLauncher(tk.Tk):
         self.command_preview: Optional[tk.Text] = None
         self.inspector_vars = {}
         self.status_pill_widgets = {}
+        self.validation_dot_widgets = {}
         self.header_logo_image: Optional[tk.PhotoImage] = None
         self._empty_menu = tk.Menu(self, tearoff=0)
         self._build_ui()
@@ -1384,9 +1406,9 @@ class MRQLauncher(tk.Tk):
         self.tree.bind("<space>", self.on_space_toggle)
         self.tree.bind("<<TreeviewSelect>>", self._on_tree_selection_changed)
         self.tree.bind("<Configure>", lambda _e: self._queue_tree_refresh())
-        self.tree.bind("<MouseWheel>", lambda _e: self.after_idle(self._refresh_status_pills))
-        self.tree.bind("<Button-4>", lambda _e: self.after_idle(self._refresh_status_pills))
-        self.tree.bind("<Button-5>", lambda _e: self.after_idle(self._refresh_status_pills))
+        self.tree.bind("<MouseWheel>", lambda _e: self._queue_tree_refresh())
+        self.tree.bind("<Button-4>", lambda _e: self._queue_tree_refresh())
+        self.tree.bind("<Button-5>", lambda _e: self._queue_tree_refresh())
 
         self.ctx_task = tk.Menu(self, tearoff=0, bg=UI_THEME["panel"], fg=UI_THEME["text"], activebackground=UI_THEME["panel_soft"], activeforeground=UI_THEME["text"])
         self.ctx_task.add_command(label="Add Task", command=self.add_task)
@@ -1610,13 +1632,16 @@ class MRQLauncher(tk.Tk):
     def _on_tree_yview(self, *args):
         self.tree.yview(*args)
         self.after_idle(self._refresh_status_pills)
+        self.after_idle(self._refresh_validation_dots)
 
     def _on_tree_xview(self, *args):
         self.tree.xview(*args)
         self.after_idle(self._refresh_status_pills)
+        self.after_idle(self._refresh_validation_dots)
 
     def _queue_tree_refresh(self):
         self.after_idle(self._refresh_status_pills)
+        self.after_idle(self._refresh_validation_dots)
         if self.minimal_mode:
             self.after_idle(self._autosize_tree_columns)
 
@@ -1627,6 +1652,9 @@ class MRQLauncher(tk.Tk):
         state = self.state[idx] if 0 <= idx < len(self.state) else default_task_state()
         if column == "status":
             return get_status_display(state.get("status", "Ready"), task.enabled)
+        if column == "validate":
+            result = self._validation_for_index(idx)
+            return result.status if result else ""
         if column == "level":
             return soft_name(task.level)
         if column == "sequence":
@@ -1667,10 +1695,14 @@ class MRQLauncher(tk.Tk):
             width = font.measure(self.tree_column_titles[name]) + base_padding
             if name == "status":
                 width = max(width, self._s(110))
+            elif name == "validate":
+                width = self._s(78)
             for idx in visible_items:
                 width = max(width, font.measure(self._tree_column_text(idx, name)) + base_padding)
             if name == "status":
                 width = min(max(width, self._s(110)), self._s(150))
+            elif name == "validate":
+                width = self._s(78)
             elif name == "level":
                 width = min(max(width, self._s(96)), self._s(160))
             elif name == "sequence":
@@ -1767,6 +1799,7 @@ class MRQLauncher(tk.Tk):
         self._full_mode_geometry = previous_geometry
         try:
             self._clear_status_pills()
+            self._clear_validation_dots()
             self._apply_minimal_layout()
             self.minsize(*self.minimal_mode_minsize)
             self.refresh_tree()
@@ -1793,6 +1826,7 @@ class MRQLauncher(tk.Tk):
         previous_geometry = self._full_mode_geometry
         try:
             self._clear_status_pills()
+            self._clear_validation_dots()
             self._apply_full_layout()
             self.minsize(*self.full_mode_minsize)
             self.refresh_tree()
@@ -1842,6 +1876,75 @@ class MRQLauncher(tk.Tk):
             except Exception:
                 pass
         self.status_pill_widgets.clear()
+
+    def _clear_validation_dots(self):
+        for widget in self.validation_dot_widgets.values():
+            try:
+                widget.destroy()
+            except Exception:
+                pass
+        self.validation_dot_widgets.clear()
+
+    def _refresh_validation_dots(self):
+        if not hasattr(self, "tree") or self.tree is None:
+            return
+
+        if "validate" not in self._get_active_tree_columns():
+            self._clear_validation_dots()
+            return
+
+        visible_ids = set()
+        children = self.tree.get_children()
+        if not children:
+            self._clear_validation_dots()
+            return
+
+        for iid in children:
+            bbox = self.tree.bbox(iid, "validate")
+            if not bbox:
+                continue
+
+            visible_ids.add(iid)
+            x, y, w, h = bbox
+            try:
+                idx = int(iid)
+            except Exception:
+                continue
+            result = self._validation_for_index(idx)
+            color = validation_status_color(result.status if result else "Not checked")
+
+            dot_size = max(self._s(11), min(self._s(15), h - self._s(12)))
+            dot_x = x + max(0, (w - dot_size) // 2)
+            dot_y = y + max(0, (h - dot_size) // 2)
+
+            dot = self.validation_dot_widgets.get(iid)
+            if dot is None or not dot.winfo_exists():
+                dot = tk.Canvas(
+                    self.tree,
+                    width=dot_size,
+                    height=dot_size,
+                    bg=UI_THEME["panel"],
+                    highlightthickness=0,
+                    bd=0,
+                    relief=tk.FLAT,
+                    takefocus=0,
+                )
+                dot.bind("<Button-1>", lambda e, item=iid: self._select_tree_item(item))
+                dot.bind("<Double-Button-1>", lambda e, item=iid: self._toggle_tree_item_ready_disabled(item))
+                self.validation_dot_widgets[iid] = dot
+
+            dot.place(x=dot_x, y=dot_y, width=dot_size, height=dot_size)
+            dot.configure(bg=UI_THEME["panel"])
+            dot.delete("all")
+            dot.create_oval(1, 1, dot_size - 1, dot_size - 1, fill=color, outline=color)
+
+        stale_ids = [iid for iid in self.validation_dot_widgets.keys() if iid not in visible_ids]
+        for iid in stale_ids:
+            try:
+                self.validation_dot_widgets[iid].destroy()
+            except Exception:
+                pass
+            self.validation_dot_widgets.pop(iid, None)
 
     def _refresh_status_pills(self):
         if not hasattr(self, "tree") or self.tree is None:
@@ -2015,6 +2118,7 @@ class MRQLauncher(tk.Tk):
             if self.minimal_mode:
                 self.after_idle(self._autosize_tree_columns)
             self.after_idle(self._refresh_status_pills)
+            self.after_idle(self._refresh_validation_dots)
 
     def _update_queue_stats(self):
         if not hasattr(self, "queue_stats_var"):
@@ -2258,6 +2362,7 @@ class MRQLauncher(tk.Tk):
 
     def _on_tree_selection_changed(self, _event=None):
         self.after_idle(self._refresh_status_pills)
+        self.after_idle(self._refresh_validation_dots)
         self._update_inspector()
         self._update_command_preview()
         self._update_status_summary()
@@ -2302,6 +2407,7 @@ class MRQLauncher(tk.Tk):
         t = self.settings.tasks[i]
         st = self.state[i] if i < len(self.state) else default_task_state()
         return (
+            "",
             "",
             soft_name(t.level),
             soft_name(t.sequence),
@@ -2409,6 +2515,7 @@ class MRQLauncher(tk.Tk):
             self._apply_default_tree_columns()
 
         self.after_idle(self._refresh_status_pills)
+        self.after_idle(self._refresh_validation_dots)
         self._update_inspector()
         self._update_command_preview()
         self._update_status_summary()
@@ -3695,6 +3802,32 @@ def run_qt_shell() -> int:
             painter.restore()
 
 
+    class QtValidationDotDelegate(QStyledItemDelegate):
+        """Draw a compact color-coded validation dot."""
+
+        def paint(self, painter: QPainter, option, index) -> None:
+            color = index.data(Qt.UserRole + 4) or validation_status_color("Not checked")
+
+            painter.save()
+            painter.setRenderHint(QPainter.Antialiasing, True)
+
+            row_bg = QColor("#151820")
+            if option.state & QStyle.State_Selected:
+                row_bg = QColor("#123B67")
+            elif index.row() % 2:
+                row_bg = QColor("#1A1F2A")
+            painter.fillRect(option.rect, row_bg)
+
+            size = max(10, min(option.rect.height() - 16, 14))
+            x = option.rect.x() + max(0, (option.rect.width() - size) // 2)
+            y = option.rect.y() + max(0, (option.rect.height() - size) // 2)
+            rect = option.rect.__class__(x, y, size, size)
+            painter.setPen(QPen(QColor(color), 1))
+            painter.setBrush(QBrush(QColor(color)))
+            painter.drawEllipse(rect)
+            painter.restore()
+
+
     class QtTaskEditor(QDialog):
         """Qt editor for one render task."""
 
@@ -4243,7 +4376,7 @@ def run_qt_shell() -> int:
     class QtMRQShell(QMainWindow):
         """Qt queue workspace backed by shared task/settings/core models."""
 
-        COLUMNS = ("Order", "Status", "Level", "Sequence", "Preset", "Running Time", "Start", "End")
+        COLUMNS = ("Order", "Status", "Validate", "Level", "Sequence", "Preset", "Running Time", "Start", "End")
 
         def __init__(self):
             super().__init__()
@@ -4401,6 +4534,10 @@ def run_qt_shell() -> int:
                 item.setData(Qt.UserRole + 1, bg)
                 item.setData(Qt.UserRole + 2, fg)
                 item.setData(Qt.UserRole + 3, border)
+                return
+            if column == 2:
+                item.setTextAlignment(Qt.AlignCenter)
+                return
             else:
                 if not task.enabled:
                     item.setForeground(QBrush(QColor(UI_THEME["muted"])))
@@ -4746,15 +4883,17 @@ def run_qt_shell() -> int:
             self.table.verticalHeader().setDefaultSectionSize(38)
             self.table.horizontalHeader().setStretchLastSection(False)
             self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
-            self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
+            self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.Stretch)
             self.table.setShowGrid(False)
             self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
             self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
             self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
             self.table.setItemDelegateForColumn(0, QtOrderBadgeDelegate(self.table))
             self.table.setItemDelegateForColumn(1, QtStatusPillDelegate(self.table))
+            self.table.setItemDelegateForColumn(2, QtValidationDotDelegate(self.table))
             self.table.setColumnWidth(0, 68)
             self.table.setColumnWidth(1, 116)
+            self.table.setColumnWidth(2, 74)
             self.table.setContextMenuPolicy(Qt.CustomContextMenu)
             self.table.customContextMenuRequested.connect(self._on_table_context_menu)
             self.table.itemSelectionChanged.connect(self._on_selection_changed)
@@ -5130,9 +5269,11 @@ def run_qt_shell() -> int:
                 task = self.settings.tasks[task_index]
                 state = self.state[task_index] if task_index < len(self.state) else default_task_state()
                 order = self._queue_order_for_task(task)
+                validation = self._validation_for_index(task_index)
                 values = (
                     str(order) if order is not None else "",
                     get_queue_log_status(state.get("status", "Ready"), task.enabled),
+                    "",
                     soft_name(task.level), soft_name(task.sequence), soft_name(task.preset),
                     format_runtime_display(state), format_state_time_display(state.get("start")),
                     format_state_time_display(state.get("end")),
@@ -5140,11 +5281,15 @@ def run_qt_shell() -> int:
                 for column, value in enumerate(values):
                     item = QTableWidgetItem(value)
                     item.setData(Qt.UserRole, task_index)
+                    if column == 2:
+                        item.setData(Qt.UserRole + 4, validation_status_color(validation.status if validation else "Not checked"))
+                        item.setToolTip(validation_status_tooltip(validation))
                     self._apply_status_item_style(item, task, state, column)
                     self.table.setItem(row, column, item)
             self.table.resizeColumnsToContents()
             self.table.setColumnWidth(0, 68)
             self.table.setColumnWidth(1, 116)
+            self.table.setColumnWidth(2, 74)
             for row, task_index in enumerate(visible_indices):
                 if task_index in selected_indices:
                     self.table.selectRow(row)
