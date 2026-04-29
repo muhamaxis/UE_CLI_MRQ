@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.10.11"
+APP_VERSION = "1.10.12"
 
 UI_THEME = {
     "bg": "#111318",
@@ -3070,7 +3070,7 @@ def build_unreal_command_preview(settings: AppSettings, task: RenderTask) -> str
 def run_qt_shell() -> int:
     """Launch the PySide6 queue workspace without replacing the Tkinter launcher."""
     try:
-        from PySide6.QtCore import QEvent, Qt, QTimer
+        from PySide6.QtCore import QEvent, Qt, QTimer, QSize
         from PySide6.QtGui import QColor, QBrush, QIcon, QPalette, QFont, QPainter, QPen, QPixmap
         from PySide6.QtWidgets import (
             QApplication, QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
@@ -3319,6 +3319,22 @@ def run_qt_shell() -> int:
                 background-color: {apple['accent_soft']};
                 color: #FFFFFF;
             }}
+            QListWidget {{
+                background-color: {apple['card']};
+                color: {apple['text']};
+                border: 1px solid {apple['border_soft']};
+                border-radius: 12px;
+                padding: 4px;
+                outline: none;
+            }}
+            QListWidget::item {{
+                background: transparent;
+                border: none;
+            }}
+            QListWidget::item:selected {{
+                background: transparent;
+                border: none;
+            }}
             QStatusBar {{
                 background-color: {apple['card']};
                 color: {apple['muted']};
@@ -3544,6 +3560,71 @@ def run_qt_shell() -> int:
             self.result = task
             self.accept()
 
+    class QtQueueLogListDelegate(QStyledItemDelegate):
+        """Draw queue log list items with compact colored status counters."""
+
+        COUNTER_COLORS = {
+            "Done": "#32D74B",
+            "Failed": "#FF453A",
+            "Cancelled": "#FF9F0A",
+            "Skipped": "#BF5AF2",
+            "Incomplete": "#AAB2C0",
+        }
+
+        def sizeHint(self, option, index) -> QSize:
+            return QSize(280, 72)
+
+        def paint(self, painter: QPainter, option, index) -> None:
+            data = index.data(Qt.UserRole + 1) or {}
+            filename = data.get("filename", str(index.data(Qt.DisplayRole) or ""))
+            created = data.get("created", "")
+            stats = data.get("stats", {})
+            total = int(stats.get("Total", 0) or 0)
+
+            painter.save()
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            rect = option.rect.adjusted(0, 0, -1, -1)
+            if option.state & QStyle.State_Selected:
+                bg = QColor("#123B67")
+            elif option.state & QStyle.State_MouseOver:
+                bg = QColor("#1A1F2A")
+            else:
+                bg = QColor("#151820")
+            painter.fillRect(rect, bg)
+
+            painter.setPen(QPen(QColor("#202838"), 1))
+            painter.drawLine(rect.bottomLeft(), rect.bottomRight())
+
+            left = rect.left() + 14
+            right = rect.right() - 14
+            top = rect.top() + 10
+
+            title_font = QFont(option.font)
+            title_font.setPointSize(max(9, title_font.pointSize()))
+            painter.setFont(title_font)
+            painter.setPen(QColor("#F5F7FA"))
+            painter.drawText(left, top, max(80, right - left - 74), 22, Qt.AlignLeft | Qt.AlignVCenter, filename)
+
+            painter.setPen(QColor("#D8E0EA"))
+            painter.drawText(right - 72, top, 72, 22, Qt.AlignRight | Qt.AlignVCenter, f"{total} tasks")
+
+            meta_font = QFont(option.font)
+            meta_font.setPointSize(max(8, meta_font.pointSize() - 1))
+            painter.setFont(meta_font)
+            painter.setPen(QColor("#AAB4C3"))
+            painter.drawText(left, top + 28, max(80, right - left - 120), 20, Qt.AlignLeft | Qt.AlignVCenter, created)
+
+            counter_x = right
+            for key in ("Incomplete", "Skipped", "Cancelled", "Failed", "Done"):
+                value = str(stats.get(key, 0) or 0)
+                width = max(18, painter.fontMetrics().horizontalAdvance(value) + 8)
+                counter_x -= width
+                painter.setPen(QColor(self.COUNTER_COLORS.get(key, "#AAB2C0")))
+                painter.drawText(counter_x, top + 28, width, 20, Qt.AlignRight | Qt.AlignVCenter, value)
+
+            painter.restore()
+
+
     class QtQueueLogViewer(QDialog):
         """Browse saved queue logs as sortable Minimal Mode snapshots."""
 
@@ -3597,6 +3678,8 @@ def run_qt_shell() -> int:
             left_layout.addWidget(self.search_edit)
 
             self.log_list = QListWidget(self)
+            self.log_list.setMouseTracking(True)
+            self.log_list.setItemDelegate(QtQueueLogListDelegate(self.log_list))
             self.log_list.currentItemChanged.connect(self._on_log_selected)
             left_layout.addWidget(self.log_list, 1)
 
@@ -3634,6 +3717,14 @@ def run_qt_shell() -> int:
 
             self.metrics_row = QHBoxLayout()
             self.metric_labels = {}
+            metric_value_colors = {
+                "Total": "#F5F7FA",
+                "Done": "#32D74B",
+                "Failed": "#FF453A",
+                "Cancelled": "#FF9F0A",
+                "Skipped": "#BF5AF2",
+                "Incomplete": "#AAB2C0",
+            }
             for key in ("Total", "Done", "Failed", "Cancelled", "Skipped", "Incomplete"):
                 metric = QFrame(self)
                 metric.setObjectName("ToolbarStrip")
@@ -3641,12 +3732,14 @@ def run_qt_shell() -> int:
                 metric_layout.setContentsMargins(10, 8, 10, 8)
                 label = QLabel(key)
                 label.setAlignment(Qt.AlignCenter)
+                label.setStyleSheet("background: transparent; border: none; color: #F5F7FA;")
                 value = QLabel("0")
                 value.setAlignment(Qt.AlignCenter)
                 value_font = value.font()
                 value_font.setPointSize(value_font.pointSize() + 6)
                 value_font.setBold(True)
                 value.setFont(value_font)
+                value.setStyleSheet(f"background: transparent; border: none; color: {metric_value_colors[key]};")
                 metric_layout.addWidget(label)
                 metric_layout.addWidget(value)
                 self.metric_labels[key] = value
@@ -3693,6 +3786,12 @@ def run_qt_shell() -> int:
             files.sort(key=lambda path: os.path.basename(path), reverse=True)
             return files
 
+        def _log_created_display(self, path: str) -> str:
+            try:
+                return datetime.fromtimestamp(os.path.getmtime(path)).strftime("%d %b %Y %H:%M:%S")
+            except Exception:
+                return "Unknown time"
+
         def refresh_logs(self) -> None:
             query = self.search_edit.text().strip().lower() if self.search_edit else ""
             current = self.current_log_path
@@ -3703,9 +3802,14 @@ def run_qt_shell() -> int:
             for path in visible:
                 rows, _headers = self._parse_queue_log(path)
                 stats = self._stats_for_rows(rows)
-                label = f"{os.path.basename(path)}\n{stats['Total']} tasks   Done {stats['Done']}   Failed {stats['Failed']}"
-                item = QListWidgetItem(label)
+                item = QListWidgetItem(os.path.basename(path))
+                item.setSizeHint(QSize(0, 72))
                 item.setData(Qt.UserRole, path)
+                item.setData(Qt.UserRole + 1, {
+                    "filename": os.path.basename(path),
+                    "created": self._log_created_display(path),
+                    "stats": stats,
+                })
                 self.log_list.addItem(item)
                 if current and os.path.abspath(path) == os.path.abspath(current):
                     self.log_list.setCurrentItem(item)
@@ -3793,19 +3897,20 @@ def run_qt_shell() -> int:
             return stats
 
         def _status_colors(self, status: str) -> tuple[str, str, str]:
-            if status.startswith("Done"):
-                palette = STATUS_PILL_THEME["done"]
-            elif status.startswith("Failed") or status.startswith("Cancelled"):
-                palette = STATUS_PILL_THEME["failed"]
-            elif status.startswith("Skipped"):
-                palette = STATUS_PILL_THEME["skipped"]
-            elif status.startswith("Rendering"):
-                palette = STATUS_PILL_THEME["rendering"]
-            elif status == "Queued":
-                palette = STATUS_PILL_THEME["queued"]
-            else:
-                palette = STATUS_PILL_THEME["ready"]
-            return palette["bg"], palette["text"], palette["border"]
+            clean = (status or "").strip()
+            if clean.startswith("Done"):
+                return "#143A26", "#7DFFA2", "#236C43"
+            if clean.startswith("Failed"):
+                return "#47232A", "#FF6B68", "#6F313D"
+            if clean.startswith("Cancelled"):
+                return "#4A3015", "#FFB340", "#8A5A1F"
+            if clean.startswith("Skipped"):
+                return "#3A2A4B", "#D7C7FF", "#5C4777"
+            if clean.startswith("Rendering"):
+                return "#1E315B", "#A8C9FF", "#35518E"
+            if clean == "Queued":
+                return "#3A3116", "#F0C85B", "#655523"
+            return "#173A28", "#8FE6B0", "#24573A"
 
         def load_log(self, path: str) -> None:
             rows, headers = self._parse_queue_log(path)
