@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.10.18"
+APP_VERSION = "1.10.20"
 
 UI_THEME = {
     "bg": "#111318",
@@ -72,6 +72,18 @@ def app_icon_path() -> str:
 def app_header_logo_path() -> str:
     """Return the header logo path used by full-size launcher views."""
     return resource_path(APP_HEADER_LOGO_RELATIVE_PATH)
+
+
+def user_settings_path() -> str:
+    """Return a writable per-user settings path for launcher workflow preferences."""
+    if os.name == "nt":
+        base = os.environ.get("APPDATA") or os.path.expanduser("~")
+        folder = os.path.join(base, "MRQLauncher")
+    elif sys.platform == "darwin":
+        folder = os.path.join(os.path.expanduser("~"), "Library", "Application Support", "MRQLauncher")
+    else:
+        folder = os.path.join(os.path.expanduser("~"), ".config", "MRQLauncher")
+    return os.path.join(folder, "user_settings.json")
 
 
 def apply_tk_button_hover(button: tk.Button, normal_bg: str, hover_bg: str, fg: str) -> None:
@@ -502,6 +514,83 @@ class PersistenceError(Exception):
     """Raised when persisted queue or task payloads are invalid."""
 
 
+class UserSettingsRepository:
+    """Stores launcher workflow preferences outside render queue JSON files."""
+
+    MAX_RECENT_QUEUES = 10
+    DEFAULTS = {
+        "recent_queues": [],
+        "last_queue": "",
+        "auto_load_last_queue": False,
+    }
+
+    @classmethod
+    def load(cls) -> dict:
+        path = user_settings_path()
+        data = dict(cls.DEFAULTS)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+        except FileNotFoundError:
+            return data
+        except Exception:
+            return data
+        if not isinstance(payload, dict):
+            return data
+        recent = payload.get("recent_queues", [])
+        if isinstance(recent, list):
+            data["recent_queues"] = cls._normalize_recent(recent)
+        last_queue = payload.get("last_queue", "")
+        if isinstance(last_queue, str):
+            data["last_queue"] = os.path.normpath(last_queue) if last_queue else ""
+        data["auto_load_last_queue"] = bool(payload.get("auto_load_last_queue", False))
+        return data
+
+    @classmethod
+    def save(cls, data: dict) -> None:
+        path = user_settings_path()
+        payload = {
+            "recent_queues": cls._normalize_recent(data.get("recent_queues", [])),
+            "last_queue": str(data.get("last_queue", "") or ""),
+            "auto_load_last_queue": bool(data.get("auto_load_last_queue", False)),
+        }
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+
+    @classmethod
+    def register_queue(cls, data: dict, path: str) -> dict:
+        normalized = os.path.normpath(path)
+        recent = [p for p in cls._normalize_recent(data.get("recent_queues", [])) if os.path.normcase(p) != os.path.normcase(normalized)]
+        recent.insert(0, normalized)
+        data["recent_queues"] = recent[:cls.MAX_RECENT_QUEUES]
+        data["last_queue"] = normalized
+        return data
+
+    @classmethod
+    def clear_recent(cls, data: dict) -> dict:
+        data["recent_queues"] = []
+        data["last_queue"] = ""
+        return data
+
+    @classmethod
+    def _normalize_recent(cls, paths: list) -> list:
+        result = []
+        seen = set()
+        for path in paths:
+            if not isinstance(path, str) or not path.strip():
+                continue
+            normalized = os.path.normpath(path.strip())
+            key = os.path.normcase(normalized)
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(normalized)
+            if len(result) >= cls.MAX_RECENT_QUEUES:
+                break
+        return result
+
+
 class PersistenceRepository:
     """Centralized JSON persistence for queue settings and render tasks."""
 
@@ -914,6 +1003,8 @@ class MRQLauncher(tk.Tk):
         self.full_mode_minsize = (self._s(1280), self._s(760))
         self.minimal_mode_minsize = (self._s(560), self._s(360))
         self.settings = AppSettings()
+        self.user_settings = UserSettingsRepository.load()
+        self.current_queue_path = self.user_settings.get("last_queue", "")
         self.process_controller = RenderProcessController(self._log)
         self._current_global_idx: Optional[int] = None
         self.stop_all = False
@@ -971,6 +1062,7 @@ class MRQLauncher(tk.Tk):
         self._empty_menu = tk.Menu(self, tearoff=0)
         self._build_ui()
         self.after(50, self._drain_queues)
+        self.after(100, self._auto_load_last_queue_if_enabled)
         # Periodic update for the session total time label
         self.after(500, self._tick_session_total)
 
@@ -1252,7 +1344,8 @@ class MRQLauncher(tk.Tk):
         actions = tk.Frame(top, bg=UI_THEME["panel"])
         actions.pack(side=tk.RIGHT)
         self._make_button(actions, "Minimal Mode", self.toggle_minimal_mode).pack(side=tk.LEFT, padx=(0, 6))
-        self._make_button(actions, "Load Queue", self.load_json_dialog).pack(side=tk.LEFT, padx=(0, 6))
+        self.recent_queue_button = self._make_button(actions, "Load Queue ▾", self.show_recent_queue_menu)
+        self.recent_queue_button.pack(side=tk.LEFT, padx=(0, 6))
         self._make_button(actions, "Save Queue", self.save_json_dialog).pack(side=tk.LEFT, padx=(0, 6))
         self._make_button(actions, "Save Queue Log", self.save_queue_log).pack(side=tk.LEFT)
 
@@ -1274,6 +1367,7 @@ class MRQLauncher(tk.Tk):
         self.var_nts = tk.BooleanVar(value=self.settings.no_texture_streaming)
         self.var_extra = StringVar(value=self.settings.extra_cli)
         self.var_auto_minimal = tk.BooleanVar(value=self.settings.auto_minimal_on_render)
+        self.var_auto_load_last_queue = tk.BooleanVar(value=bool(self.user_settings.get("auto_load_last_queue", False)))
 
         opts = tk.Frame(header_content, bg=UI_THEME["panel"])
         opts.pack(fill=tk.X, pady=(12, 0))
@@ -1295,6 +1389,7 @@ class MRQLauncher(tk.Tk):
         tk.Spinbox(opts, from_=240, to=16384, width=6, textvariable=self.var_resy, bg=UI_THEME["entry"], fg=UI_THEME["text"], buttonbackground=UI_THEME["panel_soft"], insertbackground=UI_THEME["text"], relief=tk.FLAT).pack(side=tk.LEFT, padx=(6, 12))
         tk.Checkbutton(opts, text="No Texture Streaming", variable=self.var_nts, bg=UI_THEME["panel"], fg=UI_THEME["text"], selectcolor=UI_THEME["entry"], activebackground=UI_THEME["panel"], activeforeground=UI_THEME["text"]).pack(side=tk.LEFT, padx=(0, 12))
         tk.Checkbutton(opts, text="Auto Minimal On Render", variable=self.var_auto_minimal, bg=UI_THEME["panel"], fg=UI_THEME["text"], selectcolor=UI_THEME["entry"], activebackground=UI_THEME["panel"], activeforeground=UI_THEME["text"]).pack(side=tk.LEFT, padx=(0, 12))
+        tk.Checkbutton(opts, text="Auto Load Last Queue", variable=self.var_auto_load_last_queue, bg=UI_THEME["panel"], fg=UI_THEME["text"], selectcolor=UI_THEME["entry"], activebackground=UI_THEME["panel"], activeforeground=UI_THEME["text"]).pack(side=tk.LEFT, padx=(0, 12))
 
         tk.Label(opts, text="Extra CLI", bg=UI_THEME["panel"], fg=UI_THEME["muted"], font=("Segoe UI", 9)).pack(side=tk.LEFT)
         self.extra_entry = self._make_entry(opts, textvariable=self.var_extra, width=28)
@@ -1314,6 +1409,7 @@ class MRQLauncher(tk.Tk):
         )
         for tracked in tracked_vars:
             tracked.trace_add("write", self._on_runtime_options_changed)
+        self.var_auto_load_last_queue.trace_add("write", self._on_user_settings_changed)
 
     def _build_sidebar(self, parent):
         self._section_title(parent, "Navigation", "Production workspace")
@@ -2129,6 +2225,55 @@ class MRQLauncher(tk.Tk):
         selected = len(self.tree.selection()) if hasattr(self, "tree") else 0
         self.queue_stats_var.set(f"Total: {total} | Visible: {visible} | Enabled: {enabled} | Selected: {selected}")
 
+    def _save_user_settings(self) -> None:
+        try:
+            UserSettingsRepository.save(self.user_settings)
+        except Exception as exc:
+            self._log(f"[Recent] Failed to save user settings: {exc}")
+
+    def _on_user_settings_changed(self, *_args) -> None:
+        self.user_settings["auto_load_last_queue"] = bool(self.var_auto_load_last_queue.get())
+        self._save_user_settings()
+
+    def _register_recent_queue(self, path: str) -> None:
+        self.user_settings = UserSettingsRepository.register_queue(self.user_settings, path)
+        self.current_queue_path = self.user_settings.get("last_queue", "")
+        self._save_user_settings()
+
+    def show_recent_queue_menu(self) -> None:
+        menu = tk.Menu(self, tearoff=0, bg=UI_THEME["panel"], fg=UI_THEME["text"], activebackground=UI_THEME["panel_soft"], activeforeground=UI_THEME["text"])
+        recent = UserSettingsRepository._normalize_recent(self.user_settings.get("recent_queues", []))
+        if recent:
+            for path in recent:
+                label = os.path.basename(path) or path
+                if os.path.normcase(path) == os.path.normcase(self.current_queue_path or ""):
+                    label = f"✓ {label}"
+                menu.add_command(label=label, command=lambda p=path: self.load_from_json(p))
+            menu.add_separator()
+        else:
+            menu.add_command(label="No recent queues", state="disabled")
+            menu.add_separator()
+        menu.add_command(label="Open Queue File...", command=self.load_json_dialog)
+        menu.add_command(label="Clear Recent Queues", command=self.clear_recent_queues)
+        try:
+            menu.tk_popup(self.recent_queue_button.winfo_rootx(), self.recent_queue_button.winfo_rooty() + self.recent_queue_button.winfo_height())
+        finally:
+            menu.grab_release()
+
+    def clear_recent_queues(self) -> None:
+        self.user_settings = UserSettingsRepository.clear_recent(self.user_settings)
+        self.current_queue_path = ""
+        self._save_user_settings()
+        self._log("[Recent] Recent queue list cleared.")
+
+    def _auto_load_last_queue_if_enabled(self) -> None:
+        if not bool(self.user_settings.get("auto_load_last_queue", False)):
+            return
+        path = self.user_settings.get("last_queue", "")
+        if not path:
+            return
+        self.load_from_json(path, silent=True)
+
     def _on_runtime_options_changed(self, *_args):
         self.settings.auto_minimal_on_render = bool(self.var_auto_minimal.get()) if hasattr(self, "var_auto_minimal") else self.settings.auto_minimal_on_render
         self._update_engine_labels()
@@ -2771,12 +2916,22 @@ class MRQLauncher(tk.Tk):
         self.var_auto_minimal.set(self.settings.auto_minimal_on_render)
         self.var_extra.set(self.settings.extra_cli)
 
-    def load_from_json(self, path: str):
+    def load_from_json(self, path: str, silent: bool = False) -> bool:
+        if not os.path.isfile(path):
+            msg = f"Queue file not found: {path}"
+            if silent:
+                self._log(f"[Recent] {msg}")
+            else:
+                messagebox.showerror("Load Queue", msg)
+            return False
         try:
             config, tasks = PersistenceRepository.load_queue(path, self.settings)
         except PersistenceError as e:
-            messagebox.showerror("Load Queue", str(e))
-            return
+            if silent:
+                self._log(f"[Recent] Failed to load last queue: {e}")
+            else:
+                messagebox.showerror("Load Queue", str(e))
+            return False
         self._apply_persistence_config(config)
         self.settings.tasks = tasks
         self.state = [default_task_state() for _ in self.settings.tasks]
@@ -2784,17 +2939,21 @@ class MRQLauncher(tk.Tk):
         self.refresh_tree()
         self._update_engine_labels()
         self._update_command_preview()
+        self._register_recent_queue(path)
+        self._log(f"[Recent] Loaded queue: {path}")
+        return True
 
     def save_to_json(self, path: str):
         PersistenceRepository.save_queue(path, self._current_persistence_config(), self.settings.tasks)
+        self._register_recent_queue(path)
 
     def load_json_dialog(self):
-        p = filedialog.askopenfilename(title="Load tasks JSON", filetypes=[("JSON", "*.json")])
+        p = filedialog.askopenfilename(title="Load Queue", filetypes=[("JSON", "*.json")])
         if p:
             self.load_from_json(p)
 
     def save_json_dialog(self):
-        p = filedialog.asksaveasfilename(title="Save tasks JSON", defaultextension=".json", filetypes=[("JSON", "*.json")])
+        p = filedialog.asksaveasfilename(title="Save Queue", defaultextension=".json", filetypes=[("JSON", "*.json")])
         if p:
             self.save_to_json(p)
 
@@ -4436,6 +4595,8 @@ def run_qt_shell() -> int:
         def __init__(self):
             super().__init__()
             self.settings = AppSettings()
+            self.user_settings = UserSettingsRepository.load()
+            self.current_queue_path = self.user_settings.get("last_queue", "")
             self.state: List[dict] = []
             self.validation_results: List[Optional[TaskValidationResult]] = []
             self.ui_events: "queue.Queue[TaskRuntimeEvent]" = queue.Queue()
@@ -4464,6 +4625,7 @@ def run_qt_shell() -> int:
             self.resy_spin = None
             self.no_texture_streaming_check = None
             self.auto_minimal_check = None
+            self.auto_load_last_queue_check = None
             self.extra_cli_edit = None
             self.command_settings_panel = None
             self.command_settings_body = None
@@ -4509,6 +4671,7 @@ def run_qt_shell() -> int:
             self.event_timer = QTimer(self)
             self.event_timer.timeout.connect(self._drain_runtime_events)
             self.event_timer.start(100)
+            QTimer.singleShot(0, self._auto_load_last_queue_if_enabled)
 
         def _build_ui(self) -> None:
             root = QWidget(self)
@@ -4637,8 +4800,8 @@ def run_qt_shell() -> int:
             title_block.addWidget(subtitle)
             title_block.addStretch(1)
             top_row.addLayout(title_block, 1)
-            load_button = self._mark_button(QPushButton("Load Queue"))
-            load_button.clicked.connect(self.load_queue_dialog)
+            load_button = self._mark_button(QPushButton("Load Queue ▾"))
+            load_button.clicked.connect(self.show_recent_queue_menu)
             save_button = self._mark_button(QPushButton("Save Queue"))
             save_button.clicked.connect(self.save_queue_dialog)
             minimal_button = self._mark_button(QPushButton("Minimal Mode"), "primary")
@@ -4703,6 +4866,7 @@ def run_qt_shell() -> int:
             self.resy_spin.setRange(1, 32768)
             self.no_texture_streaming_check = QCheckBox("No texture streaming", options_panel)
             self.auto_minimal_check = QCheckBox("Auto minimal on render", options_panel)
+            self.auto_load_last_queue_check = QCheckBox("Auto load last queue", options_panel)
             self.extra_cli_edit = QLineEdit(options_panel)
             self.extra_cli_edit.setPlaceholderText("Additional Unreal command-line arguments")
 
@@ -4738,9 +4902,10 @@ def run_qt_shell() -> int:
             options_layout.addWidget(self.resy_spin, 2, 3)
             options_layout.addWidget(self.no_texture_streaming_check, 2, 4, 1, 2)
             options_layout.addWidget(self.auto_minimal_check, 2, 6)
+            options_layout.addWidget(self.auto_load_last_queue_check, 3, 0, 1, 2)
 
-            options_layout.addWidget(QLabel("Extra CLI"), 3, 0)
-            options_layout.addWidget(self.extra_cli_edit, 3, 1, 1, 6)
+            options_layout.addWidget(QLabel("Extra CLI"), 4, 0)
+            options_layout.addWidget(self.extra_cli_edit, 4, 1, 1, 6)
             options_shell.addWidget(self.command_settings_body)
             parent_layout.addWidget(options_panel)
 
@@ -4822,6 +4987,8 @@ def run_qt_shell() -> int:
                     self.no_texture_streaming_check.setChecked(bool(self.settings.no_texture_streaming))
                 if self.auto_minimal_check:
                     self.auto_minimal_check.setChecked(bool(self.settings.auto_minimal_on_render))
+                if self.auto_load_last_queue_check:
+                    self.auto_load_last_queue_check.setChecked(bool(self.user_settings.get("auto_load_last_queue", False)))
                 if self.extra_cli_edit:
                     self.extra_cli_edit.setText(self.settings.extra_cli)
             finally:
@@ -4862,6 +5029,8 @@ def run_qt_shell() -> int:
             for check in (self.windowed_check, self.no_texture_streaming_check, self.auto_minimal_check):
                 if check:
                     check.toggled.connect(self._on_render_options_changed)
+            if self.auto_load_last_queue_check:
+                self.auto_load_last_queue_check.stateChanged.connect(self._on_user_settings_changed)
             if self.fail_policy_combo:
                 self.fail_policy_combo.currentTextChanged.connect(self._on_render_options_changed)
             if self.extra_cli_edit:
@@ -5683,15 +5852,71 @@ def run_qt_shell() -> int:
             if self.minimal_session_time_label:
                 self.minimal_session_time_label.setText(session_text)
 
-        def load_queue_dialog(self) -> None:
-            path, _ = QFileDialog.getOpenFileName(self, "Load Queue", "", "JSON (*.json);;All Files (*.*)")
-            if not path:
+        def _save_user_settings(self) -> None:
+            try:
+                UserSettingsRepository.save(self.user_settings)
+            except Exception as exc:
+                self._append_log(f"[Recent] Failed to save user settings: {exc}")
+
+        def _on_user_settings_changed(self, *_args) -> None:
+            if self.auto_load_last_queue_check:
+                self.user_settings["auto_load_last_queue"] = bool(self.auto_load_last_queue_check.isChecked())
+            self._save_user_settings()
+
+        def _register_recent_queue(self, path: str) -> None:
+            self.user_settings = UserSettingsRepository.register_queue(self.user_settings, path)
+            self.current_queue_path = self.user_settings.get("last_queue", "")
+            self._save_user_settings()
+
+        def show_recent_queue_menu(self) -> None:
+            menu = QMenu(self)
+            recent = UserSettingsRepository._normalize_recent(self.user_settings.get("recent_queues", []))
+            if recent:
+                for path in recent:
+                    label = os.path.basename(path) or path
+                    if os.path.normcase(path) == os.path.normcase(self.current_queue_path or ""):
+                        label = f"✓ {label}"
+                    action = menu.addAction(label)
+                    action.setToolTip(path)
+                    action.triggered.connect(lambda _checked=False, p=path: self.load_queue_path(p))
+                menu.addSeparator()
+            else:
+                empty_action = menu.addAction("No recent queues")
+                empty_action.setEnabled(False)
+                menu.addSeparator()
+            menu.addAction("Open Queue File...", self.load_queue_dialog)
+            menu.addAction("Clear Recent Queues", self.clear_recent_queues)
+            menu.exec(self.cursor().pos())
+
+        def clear_recent_queues(self) -> None:
+            self.user_settings = UserSettingsRepository.clear_recent(self.user_settings)
+            self.current_queue_path = ""
+            self._save_user_settings()
+            self._append_log("[Recent] Recent queue list cleared.")
+
+        def _auto_load_last_queue_if_enabled(self) -> None:
+            if not bool(self.user_settings.get("auto_load_last_queue", False)):
                 return
+            path = self.user_settings.get("last_queue", "")
+            if path:
+                self.load_queue_path(path, silent=True)
+
+        def load_queue_path(self, path: str, silent: bool = False) -> bool:
+            if not os.path.isfile(path):
+                msg = f"Queue file not found: {path}"
+                if silent:
+                    self._append_log(f"[Recent] {msg}")
+                else:
+                    QMessageBox.critical(self, "Load Queue", msg)
+                return False
             try:
                 config, tasks = PersistenceRepository.load_queue(path, self.settings)
             except PersistenceError as exc:
-                QMessageBox.critical(self, "Load Queue", str(exc))
-                return
+                if silent:
+                    self._append_log(f"[Recent] Failed to load last queue: {exc}")
+                else:
+                    QMessageBox.critical(self, "Load Queue", str(exc))
+                return False
             for key, value in config.items():
                 if hasattr(self.settings, key):
                     setattr(self.settings, key, value)
@@ -5702,7 +5927,14 @@ def run_qt_shell() -> int:
             self.runtime_queue.clear_pending(TaskRuntimeStatus.CANCELLED_QUEUE)
             self._rebuild_order_for_enabled_tasks()
             self.refresh_queue_view()
-            self._append_log(f"[Qt] Loaded queue: {path}")
+            self._register_recent_queue(path)
+            self._append_log(f"[Recent] Loaded queue: {path}")
+            return True
+
+        def load_queue_dialog(self) -> None:
+            path, _ = QFileDialog.getOpenFileName(self, "Load Queue", "", "JSON (*.json);;All Files (*.*)")
+            if path:
+                self.load_queue_path(path)
 
         def save_queue_dialog(self) -> None:
             path, _ = QFileDialog.getSaveFileName(self, "Save Queue", "", "JSON (*.json);;All Files (*.*)")
@@ -5717,6 +5949,7 @@ def run_qt_shell() -> int:
             except Exception as exc:
                 QMessageBox.critical(self, "Save Queue", str(exc))
                 return
+            self._register_recent_queue(path)
             self._append_log(f"[Qt] Saved queue: {path}")
 
         def _default_task_filename(self, task: RenderTask) -> str:
