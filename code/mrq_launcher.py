@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.10.10"
+APP_VERSION = "1.10.11"
 
 UI_THEME = {
     "bg": "#111318",
@@ -294,6 +294,26 @@ def get_status_kind(status: str, enabled: bool) -> str:
     if status == "Queued":
         return "queued"
     return "ready"
+
+
+def get_queue_log_status(status: str, enabled: bool) -> str:
+    """Return a persisted queue-log status without hiding cancellation state."""
+    if not enabled:
+        return "Disabled"
+    status = (status or TaskRuntimeStatus.READY).strip()
+    if status.startswith(TaskRuntimeStatus.CANCELLED):
+        return TaskRuntimeStatus.CANCELLED
+    if status.startswith(TaskRuntimeStatus.FAILED):
+        return TaskRuntimeStatus.FAILED
+    if status.startswith(TaskRuntimeStatus.DONE):
+        return TaskRuntimeStatus.DONE
+    if status.startswith(TaskRuntimeStatus.RENDERING):
+        return TaskRuntimeStatus.RENDERING
+    if status.startswith(TaskRuntimeStatus.SKIPPED_POLICY):
+        return TaskRuntimeStatus.SKIPPED_POLICY
+    if status == TaskRuntimeStatus.QUEUED:
+        return TaskRuntimeStatus.QUEUED
+    return TaskRuntimeStatus.READY
 
 
 def configure_windows_dpi_awareness() -> None:
@@ -2567,22 +2587,21 @@ class MRQLauncher(tk.Tk):
         return f"{h:02d}:{m:02d}:{s:02d}"
 
     def _collect_queue_rows(self) -> List[str]:
-        """Build rows for the queue summary file."""
-        rows = []
-        # Header
-        header = "Level / Sequence / Preset / Start / End / Duration"
-        rows.append(header)
-        for i, t in enumerate(self.settings.tasks):
-            st = self.state[i] if i < len(self.state) else {}
-            start_ts = st.get("start")
-            end_ts = st.get("end")
-            start_str = datetime.fromtimestamp(start_ts).strftime("%Y-%m-%d %H:%M:%S") if start_ts else ""
-            end_str = datetime.fromtimestamp(end_ts).strftime("%Y-%m-%d %H:%M:%S") if end_ts else ""
-            dur = None
-            if start_ts and end_ts:
-                dur = int(end_ts - start_ts)
+        """Build rows for the queue summary file using the Minimal Mode columns."""
+        rows = ["Order / Status / Level / Sequence / Preset / Running Time / Start / End"]
+        for order, (i, task) in enumerate(enumerate(self.settings.tasks), start=1):
+            state = self.state[i] if i < len(self.state) else default_task_state()
             rows.append(
-                f"{soft_name(t.level)} / {soft_name(t.sequence)} / {soft_name(t.preset)} / {start_str} / {end_str} / {self._format_hms(dur)}"
+                " / ".join([
+                    str(order),
+                    get_queue_log_status(state.get("status", "Ready"), task.enabled),
+                    soft_name(task.level),
+                    soft_name(task.sequence),
+                    soft_name(task.preset),
+                    format_runtime_display(state),
+                    format_state_time_display(state.get("start")),
+                    format_state_time_display(state.get("end")),
+                ])
             )
         return rows
 
@@ -3055,7 +3074,7 @@ def run_qt_shell() -> int:
         from PySide6.QtGui import QColor, QBrush, QIcon, QPalette, QFont, QPainter, QPen, QPixmap
         from PySide6.QtWidgets import (
             QApplication, QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
-            QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton,
+            QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPushButton,
             QHeaderView, QMenu, QSizePolicy, QSpinBox, QSplitter, QStatusBar, QStyle, QStyledItemDelegate, QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
         )
     except ImportError as exc:
@@ -3525,6 +3544,373 @@ def run_qt_shell() -> int:
             self.result = task
             self.accept()
 
+    class QtQueueLogViewer(QDialog):
+        """Browse saved queue logs as sortable Minimal Mode snapshots."""
+
+        COLUMNS = ("Order", "Status", "Level", "Sequence", "Preset", "Running Time", "Start", "End")
+
+        def __init__(self, parent, logs_dir: str):
+            super().__init__(parent)
+            self.logs_dir = logs_dir
+            self.current_log_path: Optional[str] = None
+            self.setWindowTitle("Queue Logs")
+            icon_path = app_icon_path()
+            if os.path.exists(icon_path):
+                self.setWindowIcon(QIcon(icon_path))
+            self.resize(1240, 760)
+            self._build_ui()
+            self.refresh_logs()
+
+        def _mark_button(self, button: QPushButton, role: str = "secondary") -> QPushButton:
+            button.setProperty("role", role)
+            return button
+
+        def _build_ui(self) -> None:
+            root = QHBoxLayout(self)
+            root.setContentsMargins(14, 14, 14, 14)
+            root.setSpacing(10)
+
+            left_panel = QFrame(self)
+            left_panel.setObjectName("Card")
+            left_panel.setMinimumWidth(340)
+            left_panel.setMaximumWidth(430)
+            left_layout = QVBoxLayout(left_panel)
+            left_layout.setSpacing(8)
+
+            title_row = QHBoxLayout()
+            title_block = QVBoxLayout()
+            title = QLabel("Queue Logs")
+            title.setObjectName("SectionTitle")
+            self.total_label = QLabel("Total logs: 0")
+            self.total_label.setObjectName("MutedLabel")
+            title_block.addWidget(title)
+            title_block.addWidget(self.total_label)
+            title_row.addLayout(title_block, 1)
+            refresh_button = self._mark_button(QPushButton("Refresh"))
+            refresh_button.clicked.connect(self.refresh_logs)
+            title_row.addWidget(refresh_button)
+            left_layout.addLayout(title_row)
+
+            self.search_edit = QLineEdit(self)
+            self.search_edit.setPlaceholderText("Search logs...")
+            self.search_edit.textChanged.connect(self.refresh_logs)
+            left_layout.addWidget(self.search_edit)
+
+            self.log_list = QListWidget(self)
+            self.log_list.currentItemChanged.connect(self._on_log_selected)
+            left_layout.addWidget(self.log_list, 1)
+
+            left_buttons = QHBoxLayout()
+            open_folder = self._mark_button(QPushButton("Open Log Folder"))
+            open_folder.clicked.connect(self.open_log_folder)
+            delete_log = self._mark_button(QPushButton("Delete Log..."), "danger")
+            delete_log.clicked.connect(self.delete_selected_log)
+            left_buttons.addWidget(open_folder)
+            left_buttons.addWidget(delete_log)
+            left_layout.addLayout(left_buttons)
+            root.addWidget(left_panel)
+
+            right_panel = QFrame(self)
+            right_panel.setObjectName("Card")
+            right_layout = QVBoxLayout(right_panel)
+            right_layout.setSpacing(10)
+
+            top_row = QHBoxLayout()
+            title_col = QVBoxLayout()
+            self.log_title = QLabel("Select a queue log")
+            self.log_title.setObjectName("TitleLabel")
+            self.log_meta = QLabel("No log selected")
+            self.log_meta.setObjectName("MutedLabel")
+            title_col.addWidget(self.log_title)
+            title_col.addWidget(self.log_meta)
+            top_row.addLayout(title_col, 1)
+            copy_button = self._mark_button(QPushButton("Copy to Clipboard"))
+            copy_button.clicked.connect(self.copy_selected_log)
+            export_button = self._mark_button(QPushButton("Export..."))
+            export_button.clicked.connect(self.export_selected_log)
+            top_row.addWidget(export_button)
+            top_row.addWidget(copy_button)
+            right_layout.addLayout(top_row)
+
+            self.metrics_row = QHBoxLayout()
+            self.metric_labels = {}
+            for key in ("Total", "Done", "Failed", "Cancelled", "Skipped", "Incomplete"):
+                metric = QFrame(self)
+                metric.setObjectName("ToolbarStrip")
+                metric_layout = QVBoxLayout(metric)
+                metric_layout.setContentsMargins(10, 8, 10, 8)
+                label = QLabel(key)
+                label.setAlignment(Qt.AlignCenter)
+                value = QLabel("0")
+                value.setAlignment(Qt.AlignCenter)
+                value_font = value.font()
+                value_font.setPointSize(value_font.pointSize() + 6)
+                value_font.setBold(True)
+                value.setFont(value_font)
+                metric_layout.addWidget(label)
+                metric_layout.addWidget(value)
+                self.metric_labels[key] = value
+                self.metrics_row.addWidget(metric)
+            right_layout.addLayout(self.metrics_row)
+
+            self.table = QTableWidget(0, len(self.COLUMNS), self)
+            self.table.setHorizontalHeaderLabels(list(self.COLUMNS))
+            self.table.setAlternatingRowColors(True)
+            self.table.verticalHeader().setVisible(False)
+            self.table.verticalHeader().setDefaultSectionSize(34)
+            self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+            self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+            self.table.setShowGrid(False)
+            self.table.horizontalHeader().setStretchLastSection(False)
+            self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+            self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
+            self.table.setItemDelegateForColumn(0, QtOrderBadgeDelegate(self.table))
+            self.table.setItemDelegateForColumn(1, QtStatusPillDelegate(self.table))
+            self.table.setColumnWidth(0, 70)
+            self.table.setColumnWidth(1, 120)
+            right_layout.addWidget(self.table, 1)
+
+            summary_label = QLabel("Log Summary")
+            summary_label.setObjectName("SectionTitle")
+            right_layout.addWidget(summary_label)
+            self.summary_view = QTextEdit(self)
+            self.summary_view.setReadOnly(True)
+            self.summary_view.setMinimumHeight(120)
+            right_layout.addWidget(self.summary_view)
+            root.addWidget(right_panel, 1)
+
+        def _queue_log_files(self) -> List[str]:
+            try:
+                files = [
+                    os.path.join(self.logs_dir, name)
+                    for name in os.listdir(self.logs_dir)
+                    if name.startswith("Queue_Log_") and name.endswith(".log")
+                ]
+            except FileNotFoundError:
+                return []
+            except Exception:
+                return []
+            files.sort(key=lambda path: os.path.basename(path), reverse=True)
+            return files
+
+        def refresh_logs(self) -> None:
+            query = self.search_edit.text().strip().lower() if self.search_edit else ""
+            current = self.current_log_path
+            self.log_list.clear()
+            files = self._queue_log_files()
+            visible = [path for path in files if not query or query in os.path.basename(path).lower()]
+            self.total_label.setText(f"Total logs: {len(files)}")
+            for path in visible:
+                rows, _headers = self._parse_queue_log(path)
+                stats = self._stats_for_rows(rows)
+                label = f"{os.path.basename(path)}\n{stats['Total']} tasks   Done {stats['Done']}   Failed {stats['Failed']}"
+                item = QListWidgetItem(label)
+                item.setData(Qt.UserRole, path)
+                self.log_list.addItem(item)
+                if current and os.path.abspath(path) == os.path.abspath(current):
+                    self.log_list.setCurrentItem(item)
+            if self.log_list.count() and self.log_list.currentRow() < 0:
+                self.log_list.setCurrentRow(0)
+            if not visible:
+                self._clear_log_view()
+
+        def _clear_log_view(self) -> None:
+            self.current_log_path = None
+            self.log_title.setText("Select a queue log")
+            self.log_meta.setText("No log selected")
+            self.table.setRowCount(0)
+            self.summary_view.setPlainText("")
+            for value in self.metric_labels.values():
+                value.setText("0")
+
+        def _on_log_selected(self, current: Optional[QListWidgetItem], _previous: Optional[QListWidgetItem]) -> None:
+            if current is None:
+                self._clear_log_view()
+                return
+            path = current.data(Qt.UserRole)
+            if isinstance(path, str):
+                self.load_log(path)
+
+        def _parse_queue_log(self, path: str) -> tuple[List[dict], List[str]]:
+            try:
+                with open(path, "r", encoding="utf-8") as handle:
+                    lines = [line.strip() for line in handle.readlines() if line.strip()]
+            except Exception:
+                return [], []
+            if not lines:
+                return [], []
+            headers = [part.strip() for part in lines[0].split(" / ")]
+            rows = []
+            for row_index, line in enumerate(lines[1:], start=1):
+                parts = [part.strip() for part in line.split(" / ")]
+                if headers == ["Level", "Sequence", "Preset", "Start", "End", "Duration"] and len(parts) >= 6:
+                    row = {
+                        "Order": str(row_index),
+                        "Status": "Done" if parts[4] else "Incomplete",
+                        "Level": parts[0],
+                        "Sequence": parts[1],
+                        "Preset": parts[2],
+                        "Running Time": parts[5],
+                        "Start": parts[3],
+                        "End": parts[4],
+                    }
+                else:
+                    row = {name: (parts[i] if i < len(parts) else "") for i, name in enumerate(headers)}
+                    for name in self.COLUMNS:
+                        row.setdefault(name, "")
+                    if not row.get("Order"):
+                        row["Order"] = str(row_index)
+                rows.append(row)
+            rows.sort(key=lambda row: self._safe_int(row.get("Order")))
+            return rows, headers
+
+        def _safe_int(self, value) -> int:
+            try:
+                return int(str(value).strip())
+            except Exception:
+                return 10**9
+
+        def _status_bucket(self, status: str) -> str:
+            clean = (status or "").strip()
+            if clean.startswith("Done"):
+                return "Done"
+            if clean.startswith("Failed"):
+                return "Failed"
+            if clean.startswith("Cancelled"):
+                return "Cancelled"
+            if clean.startswith("Skipped"):
+                return "Skipped"
+            if clean in ("", "Ready", "Queued", "Rendering", "Disabled", "Incomplete") or clean.startswith("Rendering"):
+                return "Incomplete"
+            return "Incomplete"
+
+        def _stats_for_rows(self, rows: List[dict]) -> dict:
+            stats = {"Total": len(rows), "Done": 0, "Failed": 0, "Cancelled": 0, "Skipped": 0, "Incomplete": 0}
+            for row in rows:
+                bucket = self._status_bucket(row.get("Status", ""))
+                if bucket in stats:
+                    stats[bucket] += 1
+            return stats
+
+        def _status_colors(self, status: str) -> tuple[str, str, str]:
+            if status.startswith("Done"):
+                palette = STATUS_PILL_THEME["done"]
+            elif status.startswith("Failed") or status.startswith("Cancelled"):
+                palette = STATUS_PILL_THEME["failed"]
+            elif status.startswith("Skipped"):
+                palette = STATUS_PILL_THEME["skipped"]
+            elif status.startswith("Rendering"):
+                palette = STATUS_PILL_THEME["rendering"]
+            elif status == "Queued":
+                palette = STATUS_PILL_THEME["queued"]
+            else:
+                palette = STATUS_PILL_THEME["ready"]
+            return palette["bg"], palette["text"], palette["border"]
+
+        def load_log(self, path: str) -> None:
+            rows, headers = self._parse_queue_log(path)
+            self.current_log_path = path
+            self.log_title.setText(os.path.basename(path))
+            try:
+                created = datetime.fromtimestamp(os.path.getmtime(path)).strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                created = "Unknown time"
+            self.log_meta.setText(f"{created}  •  Sorted by Order")
+            stats = self._stats_for_rows(rows)
+            for key, value in stats.items():
+                if key in self.metric_labels:
+                    self.metric_labels[key].setText(str(value))
+
+            self.table.setRowCount(len(rows))
+            for row_index, row_data in enumerate(rows):
+                for column_index, column_name in enumerate(self.COLUMNS):
+                    item = QTableWidgetItem(str(row_data.get(column_name, "")))
+                    if column_name == "Order":
+                        item.setTextAlignment(Qt.AlignCenter)
+                    if column_name == "Status":
+                        bg, fg, border = self._status_colors(str(row_data.get("Status", "")))
+                        item.setData(Qt.UserRole + 1, bg)
+                        item.setData(Qt.UserRole + 2, fg)
+                        item.setData(Qt.UserRole + 3, border)
+                    self.table.setItem(row_index, column_index, item)
+            self.table.resizeColumnsToContents()
+            self.table.setColumnWidth(0, 70)
+            self.table.setColumnWidth(1, 120)
+            if headers == ["Level", "Sequence", "Preset", "Start", "End", "Duration"]:
+                compatibility = "[Logs] Legacy queue log format detected. Order and Status were reconstructed for display."
+            else:
+                compatibility = "[Logs] Queue log format: Order / Status / Level / Sequence / Preset / Running Time / Start / End"
+            self.summary_view.setPlainText(
+                "\n".join([
+                    compatibility,
+                    f"[Logs] File: {os.path.basename(path)}",
+                    f"[Logs] Total tasks: {stats['Total']}",
+                    f"[Logs] Done: {stats['Done']} | Failed: {stats['Failed']} | Cancelled: {stats['Cancelled']} | Skipped: {stats['Skipped']} | Incomplete: {stats['Incomplete']}",
+                ])
+            )
+
+        def _selected_log_text(self) -> str:
+            if not self.current_log_path:
+                return ""
+            try:
+                with open(self.current_log_path, "r", encoding="utf-8") as handle:
+                    return handle.read()
+            except Exception:
+                return ""
+
+        def copy_selected_log(self) -> None:
+            text = self._selected_log_text()
+            if text:
+                QApplication.clipboard().setText(text)
+
+        def export_selected_log(self) -> None:
+            if not self.current_log_path:
+                return
+            target, _ = QFileDialog.getSaveFileName(
+                self,
+                "Export Queue Log",
+                os.path.basename(self.current_log_path),
+                "Log Files (*.log);;Text Files (*.txt);;All Files (*.*)",
+            )
+            if not target:
+                return
+            try:
+                with open(self.current_log_path, "r", encoding="utf-8") as source, open(target, "w", encoding="utf-8") as dest:
+                    dest.write(source.read())
+            except Exception as exc:
+                QMessageBox.critical(self, "Export Queue Log", str(exc))
+
+        def open_log_folder(self) -> None:
+            os.makedirs(self.logs_dir, exist_ok=True)
+            self._open_path(self.logs_dir)
+
+        def delete_selected_log(self) -> None:
+            if not self.current_log_path:
+                return
+            name = os.path.basename(self.current_log_path)
+            reply = QMessageBox.question(self, "Delete Queue Log", f"Delete {name}?")
+            if reply != QMessageBox.Yes:
+                return
+            try:
+                os.remove(self.current_log_path)
+            except Exception as exc:
+                QMessageBox.critical(self, "Delete Queue Log", str(exc))
+                return
+            self.current_log_path = None
+            self.refresh_logs()
+
+        def _open_path(self, path: str) -> None:
+            try:
+                if os.name == "nt":
+                    os.startfile(path)
+                elif sys.platform == "darwin":
+                    subprocess.Popen(["open", path])
+                else:
+                    subprocess.Popen(["xdg-open", path])
+            except Exception as exc:
+                QMessageBox.critical(self, "Open Path", str(exc))
+
+
     class QtMRQShell(QMainWindow):
         """Qt queue workspace backed by shared task/settings/core models."""
 
@@ -3590,6 +3976,7 @@ def run_qt_shell() -> int:
             self.queue_toolbar_panel = None
             self.minimal_mode = False
             self._normal_geometry = None
+            self.queue_log_viewer = None
             self.inspector_labels = {}
             self.setWindowTitle(f"MRQ Launcher (Qt Shell) ver {APP_VERSION}")
             icon_path = app_icon_path()
@@ -4148,7 +4535,7 @@ def run_qt_shell() -> int:
             controls.addStretch(1)
             for text, callback in (
                 ("Save Queue Log", self.save_queue_log),
-                ("Open Last Queue Log", self.open_last_queue_log),
+                ("Queue Logs", self.open_last_queue_log),
             ):
                 button = self._mark_button(QPushButton(text))
                 button.clicked.connect(callback)
@@ -4408,7 +4795,7 @@ def run_qt_shell() -> int:
                 order = self._queue_order_for_task(task)
                 values = (
                     str(order) if order is not None else "",
-                    get_status_display(state.get("status", "Ready"), task.enabled),
+                    get_queue_log_status(state.get("status", "Ready"), task.enabled),
                     soft_name(task.level), soft_name(task.sequence), soft_name(task.preset),
                     format_runtime_display(state), format_state_time_display(state.get("start")),
                     format_state_time_display(state.get("end")),
@@ -5118,17 +5505,30 @@ def run_qt_shell() -> int:
             return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
         def _collect_queue_log_rows(self) -> List[str]:
-            rows = ["Level / Sequence / Preset / Start / End / Duration"]
-            for idx, task in enumerate(self.settings.tasks):
-                state = self.state[idx] if idx < len(self.state) else {}
-                start_ts = state.get("start")
-                end_ts = state.get("end")
-                start_text = datetime.fromtimestamp(start_ts).strftime("%Y-%m-%d %H:%M:%S") if start_ts else ""
-                end_text = datetime.fromtimestamp(end_ts).strftime("%Y-%m-%d %H:%M:%S") if end_ts else ""
-                duration = int(end_ts - start_ts) if start_ts and end_ts else None
+            """Build queue log rows from the same data shown in Minimal Mode."""
+            rows = ["Order / Status / Level / Sequence / Preset / Running Time / Start / End"]
+            ordered_indices = self._ordered_task_indices()
+            if not ordered_indices:
+                ordered_indices = list(range(len(self.settings.tasks)))
+            ordered_indices = sorted(
+                ordered_indices,
+                key=lambda idx: self._queue_order_for_task(self.settings.tasks[idx]) or idx + 1,
+            )
+            for idx in ordered_indices:
+                task = self.settings.tasks[idx]
+                state = self.state[idx] if idx < len(self.state) else default_task_state()
+                order = self._queue_order_for_task(task) or idx + 1
                 rows.append(
-                    f"{soft_name(task.level)} / {soft_name(task.sequence)} / {soft_name(task.preset)} / "
-                    f"{start_text} / {end_text} / {self._format_hms(duration)}"
+                    " / ".join([
+                        str(order),
+                        get_status_display(state.get("status", "Ready"), task.enabled),
+                        soft_name(task.level),
+                        soft_name(task.sequence),
+                        soft_name(task.preset),
+                        format_runtime_display(state),
+                        format_state_time_display(state.get("start")),
+                        format_state_time_display(state.get("end")),
+                    ])
                 )
             return rows
 
@@ -5148,22 +5548,19 @@ def run_qt_shell() -> int:
                 return None
 
         def open_last_queue_log(self) -> None:
+            """Open the queue log browser and select the newest saved queue log."""
             logs_dir = self._logs_dir()
+            os.makedirs(logs_dir, exist_ok=True)
             try:
-                files = [
-                    name for name in os.listdir(logs_dir)
-                    if name.startswith("Queue_Log_") and name.endswith(".log")
-                ]
-            except FileNotFoundError:
-                files = []
+                if self.queue_log_viewer is None or not self.queue_log_viewer.isVisible():
+                    self.queue_log_viewer = QtQueueLogViewer(self, logs_dir)
+                else:
+                    self.queue_log_viewer.refresh_logs()
+                self.queue_log_viewer.show()
+                self.queue_log_viewer.raise_()
+                self.queue_log_viewer.activateWindow()
             except Exception as exc:
-                QMessageBox.critical(self, "Open Last Queue Log", str(exc))
-                return
-            if not files:
-                QMessageBox.information(self, "Open Last Queue Log", "No queue logs found.")
-                return
-            files.sort(reverse=True)
-            self._open_path(os.path.join(logs_dir, files[0]))
+                QMessageBox.critical(self, "Queue Logs", str(exc))
 
         def _open_path(self, path: str) -> None:
             try:
