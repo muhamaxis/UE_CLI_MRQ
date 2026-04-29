@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.10.20"
+APP_VERSION = "1.10.21"
 
 UI_THEME = {
     "bg": "#111318",
@@ -1389,7 +1389,6 @@ class MRQLauncher(tk.Tk):
         tk.Spinbox(opts, from_=240, to=16384, width=6, textvariable=self.var_resy, bg=UI_THEME["entry"], fg=UI_THEME["text"], buttonbackground=UI_THEME["panel_soft"], insertbackground=UI_THEME["text"], relief=tk.FLAT).pack(side=tk.LEFT, padx=(6, 12))
         tk.Checkbutton(opts, text="No Texture Streaming", variable=self.var_nts, bg=UI_THEME["panel"], fg=UI_THEME["text"], selectcolor=UI_THEME["entry"], activebackground=UI_THEME["panel"], activeforeground=UI_THEME["text"]).pack(side=tk.LEFT, padx=(0, 12))
         tk.Checkbutton(opts, text="Auto Minimal On Render", variable=self.var_auto_minimal, bg=UI_THEME["panel"], fg=UI_THEME["text"], selectcolor=UI_THEME["entry"], activebackground=UI_THEME["panel"], activeforeground=UI_THEME["text"]).pack(side=tk.LEFT, padx=(0, 12))
-        tk.Checkbutton(opts, text="Auto Load Last Queue", variable=self.var_auto_load_last_queue, bg=UI_THEME["panel"], fg=UI_THEME["text"], selectcolor=UI_THEME["entry"], activebackground=UI_THEME["panel"], activeforeground=UI_THEME["text"]).pack(side=tk.LEFT, padx=(0, 12))
 
         tk.Label(opts, text="Extra CLI", bg=UI_THEME["panel"], fg=UI_THEME["muted"], font=("Segoe UI", 9)).pack(side=tk.LEFT)
         self.extra_entry = self._make_entry(opts, textvariable=self.var_extra, width=28)
@@ -2254,6 +2253,7 @@ class MRQLauncher(tk.Tk):
             menu.add_command(label="No recent queues", state="disabled")
             menu.add_separator()
         menu.add_command(label="Open Queue File...", command=self.load_json_dialog)
+        menu.add_checkbutton(label="Auto Load Last Queue", variable=self.var_auto_load_last_queue)
         menu.add_command(label="Clear Recent Queues", command=self.clear_recent_queues)
         try:
             menu.tk_popup(self.recent_queue_button.winfo_rootx(), self.recent_queue_button.winfo_rooty() + self.recent_queue_button.winfo_height())
@@ -4625,7 +4625,6 @@ def run_qt_shell() -> int:
             self.resy_spin = None
             self.no_texture_streaming_check = None
             self.auto_minimal_check = None
-            self.auto_load_last_queue_check = None
             self.extra_cli_edit = None
             self.command_settings_panel = None
             self.command_settings_body = None
@@ -4866,7 +4865,6 @@ def run_qt_shell() -> int:
             self.resy_spin.setRange(1, 32768)
             self.no_texture_streaming_check = QCheckBox("No texture streaming", options_panel)
             self.auto_minimal_check = QCheckBox("Auto minimal on render", options_panel)
-            self.auto_load_last_queue_check = QCheckBox("Auto load last queue", options_panel)
             self.extra_cli_edit = QLineEdit(options_panel)
             self.extra_cli_edit.setPlaceholderText("Additional Unreal command-line arguments")
 
@@ -4902,10 +4900,9 @@ def run_qt_shell() -> int:
             options_layout.addWidget(self.resy_spin, 2, 3)
             options_layout.addWidget(self.no_texture_streaming_check, 2, 4, 1, 2)
             options_layout.addWidget(self.auto_minimal_check, 2, 6)
-            options_layout.addWidget(self.auto_load_last_queue_check, 3, 0, 1, 2)
 
-            options_layout.addWidget(QLabel("Extra CLI"), 4, 0)
-            options_layout.addWidget(self.extra_cli_edit, 4, 1, 1, 6)
+            options_layout.addWidget(QLabel("Extra CLI"), 3, 0)
+            options_layout.addWidget(self.extra_cli_edit, 3, 1, 1, 6)
             options_shell.addWidget(self.command_settings_body)
             parent_layout.addWidget(options_panel)
 
@@ -4987,8 +4984,6 @@ def run_qt_shell() -> int:
                     self.no_texture_streaming_check.setChecked(bool(self.settings.no_texture_streaming))
                 if self.auto_minimal_check:
                     self.auto_minimal_check.setChecked(bool(self.settings.auto_minimal_on_render))
-                if self.auto_load_last_queue_check:
-                    self.auto_load_last_queue_check.setChecked(bool(self.user_settings.get("auto_load_last_queue", False)))
                 if self.extra_cli_edit:
                     self.extra_cli_edit.setText(self.settings.extra_cli)
             finally:
@@ -5029,8 +5024,6 @@ def run_qt_shell() -> int:
             for check in (self.windowed_check, self.no_texture_streaming_check, self.auto_minimal_check):
                 if check:
                     check.toggled.connect(self._on_render_options_changed)
-            if self.auto_load_last_queue_check:
-                self.auto_load_last_queue_check.stateChanged.connect(self._on_user_settings_changed)
             if self.fail_policy_combo:
                 self.fail_policy_combo.currentTextChanged.connect(self._on_render_options_changed)
             if self.extra_cli_edit:
@@ -5858,9 +5851,8 @@ def run_qt_shell() -> int:
             except Exception as exc:
                 self._append_log(f"[Recent] Failed to save user settings: {exc}")
 
-        def _on_user_settings_changed(self, *_args) -> None:
-            if self.auto_load_last_queue_check:
-                self.user_settings["auto_load_last_queue"] = bool(self.auto_load_last_queue_check.isChecked())
+        def _on_user_settings_changed(self, checked: bool = False) -> None:
+            self.user_settings["auto_load_last_queue"] = bool(checked)
             self._save_user_settings()
 
         def _register_recent_queue(self, path: str) -> None:
@@ -5885,6 +5877,10 @@ def run_qt_shell() -> int:
                 empty_action.setEnabled(False)
                 menu.addSeparator()
             menu.addAction("Open Queue File...", self.load_queue_dialog)
+            auto_load_action = menu.addAction("Auto Load Last Queue")
+            auto_load_action.setCheckable(True)
+            auto_load_action.setChecked(bool(self.user_settings.get("auto_load_last_queue", False)))
+            auto_load_action.toggled.connect(self._on_user_settings_changed)
             menu.addAction("Clear Recent Queues", self.clear_recent_queues)
             menu.exec(self.cursor().pos())
 
