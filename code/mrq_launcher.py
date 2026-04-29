@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.10.5"
+APP_VERSION = "1.10.6"
 
 UI_THEME = {
     "bg": "#111318",
@@ -621,7 +621,6 @@ class TaskEditor(tk.Toplevel):
         self.var_level = StringVar(value=(soft_object_to_editor_path(task.level) if task else ""))
         self.var_seq = StringVar(value=(soft_object_to_editor_path(task.sequence) if task else ""))
         self.var_preset = StringVar(value=(soft_object_to_editor_path(task.preset) if task else ""))
-        self.var_output_dir = StringVar(value=(task.output_dir if task else ""))
 
         frm = tk.Frame(self, padx=10, pady=10, bg=UI_THEME["panel"])
         frm.pack(fill=tk.BOTH, expand=True)
@@ -666,27 +665,43 @@ class TaskEditor(tk.Toplevel):
                 except Exception as e:
                     messagebox.showerror("Preset error", str(e))
 
-        def pick_output_dir():
-            p = filedialog.askdirectory(title="Select Output Directory")
-            if p:
-                # Normalize to use forward slashes so UE CLI handles it consistently
-                self.var_output_dir.set(p.replace("\\", "/"))
-
         row("Project (.uproject)", self.var_uproj, pick_uproj)
         row("Map", self.var_level, pick_level, "e.g.: /Game/Maps/MyMap")
         row("Level Sequence", self.var_seq, pick_seq, "e.g.: /Game/Cinematics/Shot")
         row("MRQ Preset", self.var_preset, pick_preset, "e.g.: /Game/Cinematics/MoviePipeline/Presets/High")
-        row(
-            "Output Directory",
-            self.var_output_dir,
-            pick_output_dir,
-            "Optional. If empty, the path from MRQ Preset will be used."
-        )
 
         btn = tk.Frame(frm, bg=UI_THEME["panel"])
         btn.pack(fill="x", pady=10)
-        tk.Button(btn, text="OK", command=self.on_ok, bg=UI_THEME["accent"], fg="#FFFFFF", activebackground=UI_THEME["accent"], activeforeground="#FFFFFF", relief=tk.FLAT, bd=0, padx=12, pady=6).pack(side=tk.LEFT, padx=4)
-        tk.Button(btn, text="Cancel", command=self.destroy, bg=UI_THEME["panel_soft"], fg=UI_THEME["text"], activebackground=UI_THEME["panel_soft"], activeforeground=UI_THEME["text"], relief=tk.FLAT, bd=0, padx=12, pady=6).pack(side=tk.LEFT)
+        btn_center = tk.Frame(btn, bg=UI_THEME["panel"])
+        btn_center.pack(anchor="center")
+        tk.Button(
+            btn_center,
+            text="OK",
+            command=self.on_ok,
+            width=10,
+            bg=UI_THEME["accent"],
+            fg="#FFFFFF",
+            activebackground=UI_THEME["accent"],
+            activeforeground="#FFFFFF",
+            relief=tk.FLAT,
+            bd=0,
+            padx=12,
+            pady=6,
+        ).pack(side=tk.LEFT, padx=4)
+        tk.Button(
+            btn_center,
+            text="Cancel",
+            command=self.destroy,
+            width=10,
+            bg=UI_THEME["danger"],
+            fg="#FFFFFF",
+            activebackground=UI_THEME["danger"],
+            activeforeground="#FFFFFF",
+            relief=tk.FLAT,
+            bd=0,
+            padx=12,
+            pady=6,
+        ).pack(side=tk.LEFT, padx=4)
 
     def on_ok(self):
         t = RenderTask(
@@ -694,7 +709,7 @@ class TaskEditor(tk.Toplevel):
             level=editor_path_to_soft_object(self.var_level.get()),
             sequence=editor_path_to_soft_object(self.var_seq.get()),
             preset=editor_path_to_soft_object(self.var_preset.get()),
-            output_dir=self.var_output_dir.get().strip(),
+            output_dir=(self.source_task.output_dir if self.source_task else ""),
             notes=(self.source_task.notes if self.source_task else ""),
             added_at=(self.source_task.added_at if self.source_task else current_task_timestamp()),
             enabled=True,
@@ -3397,14 +3412,12 @@ def run_qt_shell() -> int:
             self.level_edit = QLineEdit(soft_object_to_editor_path(task.level) if task else "")
             self.sequence_edit = QLineEdit(soft_object_to_editor_path(task.sequence) if task else "")
             self.preset_edit = QLineEdit(soft_object_to_editor_path(task.preset) if task else "")
-            self.output_edit = QLineEdit(task.output_dir if task else "")
 
             rows = (
                 ("Project (.uproject)", self.project_edit, self._browse_project),
                 ("Map", self.level_edit, self._browse_level),
                 ("Level Sequence", self.sequence_edit, self._browse_sequence),
                 ("MRQ Preset", self.preset_edit, self._browse_preset),
-                ("Output Directory", self.output_edit, self._browse_output),
             )
             for row, (label_text, edit, browse_cb) in enumerate(rows):
                 form.addWidget(QLabel(label_text), row, 0)
@@ -3413,11 +3426,24 @@ def run_qt_shell() -> int:
                 button.clicked.connect(browse_cb)
                 form.addWidget(button, row, 2)
 
-            buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-            buttons.accepted.connect(self._accept)
-            buttons.rejected.connect(self.reject)
-            layout.addWidget(buttons)
-            self.resize(760, 220)
+            buttons = QHBoxLayout()
+            buttons.addStretch(1)
+            ok_button = self._styled_dialog_button("OK", "primary")
+            ok_button.clicked.connect(self._accept)
+            cancel_button = self._styled_dialog_button("Cancel", "danger")
+            cancel_button.clicked.connect(self.reject)
+            buttons.addWidget(ok_button)
+            buttons.addWidget(cancel_button)
+            buttons.addStretch(1)
+            layout.addLayout(buttons)
+            self.resize(760, 185)
+
+        def _styled_dialog_button(self, text: str, role: str) -> QPushButton:
+            button = QPushButton(text)
+            button.setProperty("role", role)
+            button.setMinimumWidth(110)
+            button.setMinimumHeight(34)
+            return button
 
         def _browse_project(self) -> None:
             path, _ = QFileDialog.getOpenFileName(self, "Select .uproject", "", "Unreal Project (*.uproject);;All Files (*.*)")
@@ -3442,18 +3468,13 @@ def run_qt_shell() -> int:
             except Exception as exc:
                 QMessageBox.critical(self, title, str(exc))
 
-        def _browse_output(self) -> None:
-            path = QFileDialog.getExistingDirectory(self, "Select Output Directory")
-            if path:
-                self.output_edit.setText(path.replace("\\", "/"))
-
         def _accept(self) -> None:
             task = RenderTask(
                 uproject=self.project_edit.text().strip(),
                 level=editor_path_to_soft_object(self.level_edit.text()),
                 sequence=editor_path_to_soft_object(self.sequence_edit.text()),
                 preset=editor_path_to_soft_object(self.preset_edit.text()),
-                output_dir=self.output_edit.text().strip(),
+                output_dir=(self.source_task.output_dir if self.source_task else ""),
                 notes=(self.source_task.notes if self.source_task else ""),
                 added_at=(self.source_task.added_at if self.source_task else current_task_timestamp()),
                 enabled=(self.source_task.enabled if self.source_task else True),
