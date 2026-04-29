@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.10.12"
+APP_VERSION = "1.10.13"
 
 UI_THEME = {
     "bg": "#111318",
@@ -163,6 +163,114 @@ def editor_path_to_soft_object(editor_path: str) -> str:
     if not leaf or "." in leaf:
         return value
     return f"{value}.{leaf}"
+
+
+def _soft_path_object_part(soft_path: str) -> str:
+    """Return the package/object path part used for local file validation."""
+    value = (soft_path or "").strip().replace("\\", "/")
+    if not value:
+        return value
+    object_path, separator, asset_name = value.rpartition(".")
+    if separator and object_path.startswith("/") and asset_name:
+        return object_path
+    return value
+
+
+def soft_path_to_local_asset_candidates(project_path: str, soft_path: str, extensions: tuple[str, ...]) -> tuple[list[str], Optional[str]]:
+    """Build local Content candidates for /Game paths without touching JSON data."""
+    object_path = _soft_path_object_part(soft_path)
+    if not object_path.startswith("/Game/"):
+        return [], object_path.split("/", 2)[1] if object_path.startswith("/") and "/" in object_path[1:] else object_path
+
+    project_root = os.path.dirname(os.path.abspath(project_path))
+    relative = object_path[len("/Game/"):].strip("/")
+    if not relative:
+        return [], None
+    base_path = os.path.join(project_root, "Content", *relative.split("/"))
+    return [base_path + ext for ext in extensions], None
+
+
+@dataclass
+class TaskValidationResult:
+    """Transient task validation state; never persisted to queue JSON."""
+
+    status: str
+    message: str = ""
+    details: List[str] = field(default_factory=list)
+
+    @property
+    def is_blocking(self) -> bool:
+        return self.status in ("Incomplete", "Invalid")
+
+    @property
+    def display_text(self) -> str:
+        parts = [f"Validation: {self.status}"]
+        if self.message:
+            parts.append(self.message)
+        if self.details:
+            parts.extend(self.details[:4])
+        return "\n".join(parts)
+
+
+def basic_task_validation(task) -> TaskValidationResult:
+    """Validate required task fields only; no filesystem checks."""
+    missing = []
+    if not getattr(task, "uproject", ""):
+        missing.append("Project")
+    if not getattr(task, "level", ""):
+        missing.append("Level")
+    if not getattr(task, "sequence", ""):
+        missing.append("Sequence")
+    if not getattr(task, "preset", ""):
+        missing.append("Preset")
+    if missing:
+        return TaskValidationResult("Incomplete", "Missing required field(s): " + ", ".join(missing))
+    return TaskValidationResult("Not checked", "Path validation runs when a queue JSON is loaded.")
+
+
+def validate_task_paths(task) -> TaskValidationResult:
+    """Validate a loaded queue task against local files without changing JSON structure."""
+    basic = basic_task_validation(task)
+    if basic.status == "Incomplete":
+        return basic
+
+    project_path = os.path.abspath(os.path.normpath(task.uproject))
+    errors = []
+    warnings = []
+
+    if not project_path.lower().endswith(".uproject"):
+        errors.append(f"Project is not a .uproject file: {task.uproject}")
+    elif not os.path.isfile(project_path):
+        errors.append(f"Project file not found: {task.uproject}")
+
+    if not errors:
+        checks = (
+            ("Level", task.level, (".umap",)),
+            ("Sequence", task.sequence, (".uasset",)),
+            ("Preset", task.preset, (".uasset",)),
+        )
+        for label, soft_path, extensions in checks:
+            candidates, mount = soft_path_to_local_asset_candidates(project_path, soft_path, extensions)
+            if mount is not None:
+                warnings.append(f"{label}: unsupported mount point, skipped local check: {soft_path}")
+                continue
+            if not candidates or not any(os.path.isfile(candidate) for candidate in candidates):
+                expected = candidates[0] if candidates else soft_path
+                errors.append(f"{label} asset not found: {expected}")
+
+    if errors:
+        return TaskValidationResult("Invalid", "Local files are missing.", errors)
+    if warnings:
+        return TaskValidationResult("Unknown", "Some paths could not be checked locally.", warnings)
+    return TaskValidationResult("Ready", "All local project and asset files were found.")
+
+
+def summarize_validation_results(results: List[TaskValidationResult]) -> str:
+    """Return a compact validation summary for log output."""
+    counts = {"Ready": 0, "Invalid": 0, "Incomplete": 0, "Unknown": 0, "Not checked": 0}
+    for result in results:
+        counts[result.status] = counts.get(result.status, 0) + 1
+    return " | ".join(f"{key}: {counts[key]}" for key in ("Ready", "Invalid", "Incomplete", "Unknown") if counts.get(key, 0))
 
 
 class TaskRuntimeStatus:
@@ -823,6 +931,7 @@ class MRQLauncher(tk.Tk):
         self.log_queue: "queue.Queue[str]" = queue.Queue()
         self.ui_queue: "queue.Queue[tuple]" = queue.Queue()
         self.state: List[dict] = []  # {status, progress, start, end}
+        self.validation_results: List[Optional[TaskValidationResult]] = []
         # --- New: shared runtime task queue and worker flag
         self.runtime_queue = RuntimeQueueCoordinator(
             self._find_task_index_by_identity,
@@ -1373,12 +1482,22 @@ class MRQLauncher(tk.Tk):
                 highlightbackground=UI_THEME["border"],
             ).pack(fill=tk.X, pady=(4, 0))
 
-        tk.Label(parent, textvariable=self.inspector_vars["validation"], bg=UI_THEME["panel"], fg=UI_THEME["text"], font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(6, 10))
+        self.validation_label = tk.Label(
+            parent,
+            textvariable=self.inspector_vars["validation"],
+            bg=UI_THEME["panel"],
+            fg=UI_THEME["text"],
+            font=("Segoe UI", 10, "bold"),
+            justify=tk.LEFT,
+            wraplength=self._s(340),
+        )
+        self.validation_label.pack(anchor="w", pady=(6, 10))
 
         quick = tk.Frame(parent, bg=UI_THEME["panel"])
         quick.pack(fill=tk.X, pady=(0, 10))
         self._make_button(quick, "Copy Command", self.copy_command_preview).pack(fill=tk.X, pady=(0, 6))
-        self._make_button(quick, "Open Output Folder", self.open_selected_output_dir).pack(fill=tk.X)
+        self._make_button(quick, "Open Output Folder", self.open_selected_output_dir).pack(fill=tk.X, pady=(0, 6))
+        self._make_button(quick, "Fix Project Path", self.fix_project_path_for_queue).pack(fill=tk.X)
 
         actions = tk.Frame(parent, bg=UI_THEME["panel"])
         actions.pack(fill=tk.X, pady=(8, 0))
@@ -1946,6 +2065,88 @@ class MRQLauncher(tk.Tk):
         except Exception as e:
             self._log(f"[UI] Failed to open output directory: {e}")
 
+    def _validation_for_index(self, idx: Optional[int]) -> Optional[TaskValidationResult]:
+        if idx is None or not (0 <= idx < len(self.settings.tasks)):
+            return None
+        if idx < len(self.validation_results) and self.validation_results[idx] is not None:
+            return self.validation_results[idx]
+        return basic_task_validation(self.settings.tasks[idx])
+
+    def _set_validation_label_style(self, status: str) -> None:
+        if not hasattr(self, "validation_label"):
+            return
+        palette = {
+            "Ready": "#8FE6B0",
+            "Invalid": "#FF9AA9",
+            "Incomplete": "#F0C85B",
+            "Unknown": "#A8C9FF",
+            "Not checked": UI_THEME["muted"],
+        }
+        try:
+            self.validation_label.configure(fg=palette.get(status, UI_THEME["text"]))
+        except Exception:
+            pass
+
+    def _validate_loaded_queue_tasks(self) -> None:
+        self.validation_results = [validate_task_paths(task) for task in self.settings.tasks]
+        summary = summarize_validation_results(self.validation_results)
+        if summary:
+            self._log(f"[Validation] Queue validation: {summary}")
+        for idx, result in enumerate(self.validation_results, start=1):
+            if result.status in ("Invalid", "Incomplete"):
+                self._log(f"[Validation] Task {idx} {result.status}: {result.message}")
+                for detail in result.details:
+                    self._log(f"[Validation]   {detail}")
+
+    def _filter_tasks_by_loaded_validation(self, tasks: List[RenderTask]) -> List[RenderTask]:
+        eligible = []
+        skipped = 0
+        for task in tasks:
+            idx = self._find_task_index_by_identity(task)
+            result = self._validation_for_index(idx)
+            if result is not None and result.is_blocking:
+                skipped += 1
+                self._log(f"[Validation] Skipped {soft_name(task.sequence)}: {result.status} - {result.message}")
+                for detail in result.details:
+                    self._log(f"[Validation]   {detail}")
+                continue
+            if result is not None and result.status == "Unknown":
+                self._log(f"[Validation] Warning for {soft_name(task.sequence)}: {result.message}")
+            eligible.append(task)
+        if skipped:
+            self._log(f"[Validation] Skipped {skipped} task(s) because validation is blocking.")
+        return eligible
+
+    def _selected_or_first_project_basename(self) -> str:
+        selected = self._selected_task()
+        source = selected or (self.settings.tasks[0] if self.settings.tasks else None)
+        return os.path.basename(source.uproject) if source and source.uproject else ""
+
+    def fix_project_path_for_queue(self):
+        if not self.settings.tasks:
+            messagebox.showinfo("Fix Project Path", "Load a queue first.")
+            return
+        new_project = filedialog.askopenfilename(title="Select replacement .uproject", filetypes=[("Unreal Project", "*.uproject")])
+        if not new_project:
+            return
+        if not os.path.isfile(new_project) or not new_project.lower().endswith(".uproject"):
+            messagebox.showerror("Fix Project Path", "Select a valid .uproject file.")
+            return
+
+        target_name = self._selected_or_first_project_basename()
+        candidates = [task for task in self.settings.tasks if not target_name or os.path.basename(task.uproject) == target_name]
+        if not candidates:
+            candidates = list(self.settings.tasks)
+        if not messagebox.askyesno("Fix Project Path", f"Update project path for {len(candidates)} task(s)?"):
+            return
+
+        normalized = new_project.replace("\\", "/")
+        for task in candidates:
+            task.uproject = normalized
+        self._validate_loaded_queue_tasks()
+        self.refresh_tree()
+        self._log(f"[Validation] Project path relinked for {len(candidates)} task(s): {normalized}")
+
     def _update_inspector(self):
         if not self.inspector_vars:
             return
@@ -1959,10 +2160,11 @@ class MRQLauncher(tk.Tk):
             self.inspector_vars["preset"].set("-")
             self.inspector_vars["notes"].set("-")
             self.inspector_vars["validation"].set("Validation: -")
+            self._set_validation_label_style("")
             return
 
         job_name = soft_name(task.sequence)
-        valid = all([task.uproject, task.level, task.sequence, task.preset])
+        validation = self._validation_for_index(self._selected_task_index())
 
         self.inspector_vars["job"].set(job_name)
         self.inspector_vars["enabled"].set("Yes" if task.enabled else "No")
@@ -1971,7 +2173,8 @@ class MRQLauncher(tk.Tk):
         self.inspector_vars["sequence"].set(soft_object_to_editor_path(task.sequence) or "-")
         self.inspector_vars["preset"].set(soft_object_to_editor_path(task.preset) or "-")
         self.inspector_vars["notes"].set("-")
-        self.inspector_vars["validation"].set(f"Validation: {'Ready' if valid else 'Incomplete'}")
+        self.inspector_vars["validation"].set(validation.display_text if validation else "Validation: -")
+        self._set_validation_label_style(validation.status if validation else "")
 
     def _update_command_preview(self):
         if self.command_preview is None:
@@ -2088,6 +2291,12 @@ class MRQLauncher(tk.Tk):
     def _ensure_state(self):
         while len(self.state) < len(self.settings.tasks):
             self.state.append(default_task_state())
+        if len(self.state) > len(self.settings.tasks):
+            self.state = self.state[:len(self.settings.tasks)]
+        while len(self.validation_results) < len(self.settings.tasks):
+            self.validation_results.append(None)
+        if len(self.validation_results) > len(self.settings.tasks):
+            self.validation_results = self.validation_results[:len(self.settings.tasks)]
 
     def _row_values(self, i: int):
         t = self.settings.tasks[i]
@@ -2228,12 +2437,14 @@ class MRQLauncher(tk.Tk):
             return
         tasks = self.settings.tasks
         state = self.state
+        validation = self.validation_results
         if delta < 0:
             sel_sorted = sorted(sel)
             for i, idx in enumerate(sel_sorted):
                 if idx > 0 and (idx - 1) not in sel_sorted:
                     tasks[idx - 1], tasks[idx] = tasks[idx], tasks[idx - 1]
                     state[idx - 1], state[idx] = state[idx], state[idx - 1]
+                    validation[idx - 1], validation[idx] = validation[idx], validation[idx - 1]
                     sel_sorted[i] = idx - 1
             new_sel = sel_sorted
         else:
@@ -2242,6 +2453,7 @@ class MRQLauncher(tk.Tk):
                 if idx < len(tasks) - 1 and (idx + 1) not in sel_sorted:
                     tasks[idx + 1], tasks[idx] = tasks[idx], tasks[idx + 1]
                     state[idx + 1], state[idx] = state[idx], state[idx + 1]
+                    validation[idx + 1], validation[idx] = validation[idx], validation[idx + 1]
                     sel_sorted[i] = idx + 1
             new_sel = sel_sorted
         self.refresh_tree()
@@ -2254,6 +2466,7 @@ class MRQLauncher(tk.Tk):
         self.wait_window(dlg)
         if dlg.result:
             self.settings.tasks.append(dlg.result)
+            self.validation_results.append(None)
             self.refresh_tree()
 
     def edit_task(self):
@@ -2270,6 +2483,8 @@ class MRQLauncher(tk.Tk):
             # Otherwise edited tasks can still run with stale parameters.
             self._remove_tasks_from_runtime_queue([old_task])
             self.settings.tasks[idx] = dlg.result
+            if idx < len(self.validation_results):
+                self.validation_results[idx] = None
             self.refresh_tree()
 
     def duplicate_task(self):
@@ -2284,6 +2499,7 @@ class MRQLauncher(tk.Tk):
             clone_data["added_at"] = current_task_timestamp()
             self.settings.tasks.insert(idx + 1, RenderTask(**clone_data))
             self.state.insert(idx + 1, default_task_state())
+            self.validation_results.insert(idx + 1, None)
         self.refresh_tree()
 
     def remove_task(self):
@@ -2297,6 +2513,8 @@ class MRQLauncher(tk.Tk):
         for idx in sel:
             del self.settings.tasks[idx]
             del self.state[idx]
+            if idx < len(self.validation_results):
+                del self.validation_results[idx]
         self.refresh_tree()
 
     def remove_unchecked_tasks(self):
@@ -2305,11 +2523,13 @@ class MRQLauncher(tk.Tk):
         removed_tasks = []
         new_tasks = []
         new_state = []
+        new_validation = []
         for i, t in enumerate(self.settings.tasks):
             if t.enabled:
                 new_tasks.append(t)
                 if i < len(self.state):
                     new_state.append(self.state[i])
+                new_validation.append(self.validation_results[i] if i < len(self.validation_results) else None)
             else:
                 removed_tasks.append(t)
                 removed += 1
@@ -2318,6 +2538,7 @@ class MRQLauncher(tk.Tk):
         self._remove_tasks_from_runtime_queue(removed_tasks)
         self.settings.tasks = new_tasks
         self.state = new_state
+        self.validation_results = new_validation
         self.refresh_tree()
         self._log(f"[Tasks] Removed {removed} unchecked task(s).")
 
@@ -2402,6 +2623,7 @@ class MRQLauncher(tk.Tk):
         self._apply_persistence_config(config)
         self.settings.tasks = tasks
         self.state = [default_task_state() for _ in self.settings.tasks]
+        self._validate_loaded_queue_tasks()
         self.refresh_tree()
         self._update_engine_labels()
         self._update_command_preview()
@@ -2431,6 +2653,7 @@ class MRQLauncher(tk.Tk):
                 for task in tasks:
                     self.settings.tasks.append(task)
                     self.state.append(default_task_state())
+                    self.validation_results.append(None)
                     loaded += 1
             except PersistenceError as e:
                 messagebox.showerror("Load Task", f"{os.path.basename(p)}: {e}")
@@ -2904,6 +3127,7 @@ class MRQLauncher(tk.Tk):
 
     def _enqueue_tasks(self, tasks: List[RenderTask], mark_queued: bool = True, log_prefix: str = "[+] Added "):
         """Enqueue tasks through the runtime queue coordinator."""
+        tasks = self._filter_tasks_by_loaded_validation(tasks)
         changed = self.runtime_queue.enqueue_tasks(tasks, mark_queued=mark_queued, log_prefix=log_prefix)
         if changed:
             self.refresh_tree()
@@ -4025,6 +4249,7 @@ def run_qt_shell() -> int:
             super().__init__()
             self.settings = AppSettings()
             self.state: List[dict] = []
+            self.validation_results: List[Optional[TaskValidationResult]] = []
             self.ui_events: "queue.Queue[TaskRuntimeEvent]" = queue.Queue()
             self.log_events: "queue.Queue[str]" = queue.Queue()
             self.process_controller = RenderProcessController(self._append_log)
@@ -4615,6 +4840,9 @@ def run_qt_shell() -> int:
             copy_button = self._mark_button(QPushButton("Copy Command"), "primary")
             copy_button.clicked.connect(self.copy_command_preview)
             layout.addWidget(copy_button)
+            fix_button = self._mark_button(QPushButton("Fix Project Path"))
+            fix_button.clicked.connect(self.fix_project_path_for_queue)
+            layout.addWidget(fix_button)
             return panel
 
         def _build_diagnostics_area(self) -> QFrame:
@@ -4809,6 +5037,10 @@ def run_qt_shell() -> int:
                 self.state.append(default_task_state())
             if len(self.state) > len(self.settings.tasks):
                 self.state = self.state[:len(self.settings.tasks)]
+            while len(self.validation_results) < len(self.settings.tasks):
+                self.validation_results.append(None)
+            if len(self.validation_results) > len(self.settings.tasks):
+                self.validation_results = self.validation_results[:len(self.settings.tasks)]
             self._prune_queue_order()
 
         def _prune_queue_order(self) -> None:
@@ -5046,6 +5278,71 @@ def run_qt_shell() -> int:
             self._update_command_preview()
             self._update_status_bar()
 
+        def _validation_for_index(self, idx: Optional[int]) -> Optional[TaskValidationResult]:
+            if idx is None or not (0 <= idx < len(self.settings.tasks)):
+                return None
+            if idx < len(self.validation_results) and self.validation_results[idx] is not None:
+                return self.validation_results[idx]
+            return basic_task_validation(self.settings.tasks[idx])
+
+        def _validate_loaded_queue_tasks(self) -> None:
+            self.validation_results = [validate_task_paths(task) for task in self.settings.tasks]
+            summary = summarize_validation_results(self.validation_results)
+            if summary:
+                self._append_log(f"[Validation] Queue validation: {summary}")
+            for idx, result in enumerate(self.validation_results, start=1):
+                if result.status in ("Invalid", "Incomplete"):
+                    self._append_log(f"[Validation] Task {idx} {result.status}: {result.message}")
+                    for detail in result.details:
+                        self._append_log(f"[Validation]   {detail}")
+
+        def _filter_tasks_by_loaded_validation(self, tasks: List[RenderTask]) -> List[RenderTask]:
+            eligible = []
+            skipped = 0
+            for task in tasks:
+                idx = self._find_task_index_by_identity(task)
+                result = self._validation_for_index(idx)
+                if result is not None and result.is_blocking:
+                    skipped += 1
+                    self._append_log(f"[Validation] Skipped {soft_name(task.sequence)}: {result.status} - {result.message}")
+                    for detail in result.details:
+                        self._append_log(f"[Validation]   {detail}")
+                    continue
+                if result is not None and result.status == "Unknown":
+                    self._append_log(f"[Validation] Warning for {soft_name(task.sequence)}: {result.message}")
+                eligible.append(task)
+            if skipped:
+                self._append_log(f"[Validation] Skipped {skipped} task(s) because validation is blocking.")
+            return eligible
+
+        def fix_project_path_for_queue(self) -> None:
+            if not self.settings.tasks:
+                QMessageBox.information(self, "Fix Project Path", "Load a queue first.")
+                return
+            new_project, _ = QFileDialog.getOpenFileName(self, "Select replacement .uproject", "", "Unreal Project (*.uproject);;All Files (*.*)")
+            if not new_project:
+                return
+            if not os.path.isfile(new_project) or not new_project.lower().endswith(".uproject"):
+                QMessageBox.critical(self, "Fix Project Path", "Select a valid .uproject file.")
+                return
+
+            selected = self._selected_task()
+            source = selected or (self.settings.tasks[0] if self.settings.tasks else None)
+            target_name = os.path.basename(source.uproject) if source and source.uproject else ""
+            candidates = [task for task in self.settings.tasks if not target_name or os.path.basename(task.uproject) == target_name]
+            if not candidates:
+                candidates = list(self.settings.tasks)
+            reply = QMessageBox.question(self, "Fix Project Path", f"Update project path for {len(candidates)} task(s)?")
+            if reply != QMessageBox.Yes:
+                return
+
+            normalized = new_project.replace("\\", "/")
+            for task in candidates:
+                task.uproject = normalized
+            self._validate_loaded_queue_tasks()
+            self.refresh_queue_view()
+            self._append_log(f"[Validation] Project path relinked for {len(candidates)} task(s): {normalized}")
+
         def _update_inspector(self) -> None:
             task = self._selected_task()
             if task is None:
@@ -5055,14 +5352,15 @@ def run_qt_shell() -> int:
                     "validation": "Validation: -",
                 }
             else:
-                valid = all([task.uproject, task.level, task.sequence, task.preset])
+                idx = self._find_task_index_by_identity(task)
+                validation = self._validation_for_index(idx)
                 values = {
                     "job": f"Job Name: {soft_name(task.sequence)}", "enabled": f"Enabled: {'Yes' if task.enabled else 'No'}",
                     "project": f"Project: {task.uproject or '-'}",
                     "level": f"Level: {soft_object_to_editor_path(task.level) or '-'}",
                     "sequence": f"Sequence: {soft_object_to_editor_path(task.sequence) or '-'}",
                     "preset": f"Preset: {soft_object_to_editor_path(task.preset) or '-'}",
-                    "validation": f"Validation: {'Ready' if valid else 'Incomplete'}",
+                    "validation": validation.display_text if validation else "Validation: -",
                 }
             for key, value in values.items():
                 label = self.inspector_labels.get(key)
@@ -5152,6 +5450,7 @@ def run_qt_shell() -> int:
             self._apply_settings_to_option_controls()
             self.settings.tasks = tasks
             self.state = [default_task_state() for _ in self.settings.tasks]
+            self._validate_loaded_queue_tasks()
             self.runtime_queue.clear_pending(TaskRuntimeStatus.CANCELLED_QUEUE)
             self._rebuild_order_for_enabled_tasks()
             self.refresh_queue_view()
@@ -5181,6 +5480,7 @@ def run_qt_shell() -> int:
                 return
             self.settings.tasks.append(dialog.result)
             self.state.append(default_task_state())
+            self.validation_results.append(None)
             self.refresh_queue_view()
             self._select_task_index(len(self.settings.tasks) - 1)
             self._append_log("[Qt] Added task.")
@@ -5197,6 +5497,7 @@ def run_qt_shell() -> int:
                     QMessageBox.critical(self, "Load Task", f"{os.path.basename(path)}: {exc}")
                     continue
                 self.settings.tasks.extend(tasks)
+                self.validation_results.extend([None for _ in tasks])
                 loaded += len(tasks)
             self._ensure_state()
             self.refresh_queue_view()
@@ -5248,6 +5549,7 @@ def run_qt_shell() -> int:
                 clone_data["added_at"] = current_task_timestamp()
                 self.settings.tasks.insert(idx + 1, RenderTask(**clone_data))
                 self.state.insert(idx + 1, default_task_state())
+                self.validation_results.insert(idx + 1, None)
             self.refresh_queue_view()
 
         def remove_selected(self) -> None:
@@ -5261,6 +5563,8 @@ def run_qt_shell() -> int:
             for idx in sorted(indices, reverse=True):
                 del self.settings.tasks[idx]
                 del self.state[idx]
+                if idx < len(self.validation_results):
+                    del self.validation_results[idx]
             self.refresh_queue_view()
 
         def move_selected(self, delta: int) -> None:
@@ -5273,6 +5577,7 @@ def run_qt_shell() -> int:
                 return
             self.settings.tasks[idx], self.settings.tasks[new_idx] = self.settings.tasks[new_idx], self.settings.tasks[idx]
             self.state[idx], self.state[new_idx] = self.state[new_idx], self.state[idx]
+            self.validation_results[idx], self.validation_results[new_idx] = self.validation_results[new_idx], self.validation_results[idx]
             self.refresh_queue_view()
             self._select_task_index(new_idx)
 
@@ -5425,6 +5730,7 @@ def run_qt_shell() -> int:
             self.append_selected_to_render_queue()
 
         def _enqueue_tasks(self, tasks: List[RenderTask]) -> bool:
+            tasks = self._filter_tasks_by_loaded_validation(tasks)
             changed = self.runtime_queue.enqueue_tasks(tasks, mark_queued=True, log_prefix="[Qt] Queued ")
             if changed:
                 self.refresh_queue_view()
@@ -5765,6 +6071,8 @@ def run_qt_shell() -> int:
             previous_order = self.queue_order_by_task_id.pop(id(old_task), None)
             self.runtime_queue.remove_tasks([old_task])
             self.settings.tasks[idx] = dialog.result
+            if idx < len(self.validation_results):
+                self.validation_results[idx] = None
             if previous_order is not None:
                 self.queue_order_by_task_id[id(dialog.result)] = previous_order
                 dialog.result.enabled = True
