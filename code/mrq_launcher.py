@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.10.17"
+APP_VERSION = "1.10.18"
 
 UI_THEME = {
     "bg": "#111318",
@@ -5216,7 +5216,10 @@ def run_qt_shell() -> int:
         def _set_minimal_columns(self, enabled: bool) -> None:
             if not self.table:
                 return
-            for column in (6, 7):
+            # Minimal Mode keeps Running Time visible and hides only absolute timestamps.
+            start_column = self.COLUMNS.index("Start")
+            end_column = self.COLUMNS.index("End")
+            for column in (start_column, end_column):
                 self.table.setColumnHidden(column, enabled)
 
         def _resize_minimal_window(self) -> None:
