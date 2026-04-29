@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.10.9"
+APP_VERSION = "1.10.10"
 
 UI_THEME = {
     "bg": "#111318",
@@ -2586,16 +2586,19 @@ class MRQLauncher(tk.Tk):
             )
         return rows
 
-    def save_queue_log(self):
-        """Save a compact queue summary into mrq_logs/Queue_Log_*.log"""
+    def save_queue_log(self, auto: bool = False):
+        """Save a compact queue summary into mrq_logs/Queue_Log_*.log."""
         try:
             path = self._queue_log_default_path()
             rows = self._collect_queue_rows()
             with open(path, "w", encoding="utf-8") as f:
                 f.write("\n".join(rows) + "\n")
-            self._log(f"[Logs] Queue summary saved: {os.path.basename(path)}")
+            label = "auto-saved" if auto else "saved"
+            self._log(f"[Logs] Queue summary {label}: {os.path.basename(path)}")
+            return path
         except Exception as e:
             self._log(f"[Logs] Failed to save queue log: {e}")
+            return None
 
     def open_last_log_for_selected(self):
         sel = self._selected_indices()
@@ -2937,6 +2940,8 @@ class MRQLauncher(tk.Tk):
                     break
                 if isinstance(item, TaskRuntimeEvent):
                     status_changed = self._apply_runtime_event(item) or status_changed
+                    if item.event_type == TaskRuntimeEventType.QUEUE_COMPLETED:
+                        self.save_queue_log(auto=True)
                     continue
 
                 kind = item[0]
@@ -4534,6 +4539,8 @@ def run_qt_shell() -> int:
                 while True:
                     event = self.ui_events.get_nowait()
                     changed = self._apply_runtime_event(event) or changed
+                    if event.event_type == TaskRuntimeEventType.QUEUE_COMPLETED:
+                        self.save_queue_log(auto=True)
             except queue.Empty:
                 pass
             self._update_session_runtime()
@@ -5125,14 +5132,20 @@ def run_qt_shell() -> int:
                 )
             return rows
 
-        def save_queue_log(self) -> None:
+        def save_queue_log(self, auto: bool = False) -> Optional[str]:
             try:
                 path = self._queue_log_default_path()
                 with open(path, "w", encoding="utf-8") as handle:
                     handle.write("\n".join(self._collect_queue_log_rows()) + "\n")
-                self._append_log(f"[Qt Logs] Queue summary saved: {os.path.basename(path)}")
+                label = "auto-saved" if auto else "saved"
+                self._append_log(f"[Qt Logs] Queue summary {label}: {os.path.basename(path)}")
+                return path
             except Exception as exc:
-                QMessageBox.critical(self, "Save Queue Log", str(exc))
+                if auto:
+                    self._append_log(f"[Qt Logs] Failed to auto-save queue summary: {exc}")
+                else:
+                    QMessageBox.critical(self, "Save Queue Log", str(exc))
+                return None
 
         def open_last_queue_log(self) -> None:
             logs_dir = self._logs_dir()
