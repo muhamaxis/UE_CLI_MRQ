@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.10.4"
+APP_VERSION = "1.10.5"
 
 UI_THEME = {
     "bg": "#111318",
@@ -110,6 +110,35 @@ def soft_name(soft_path: str) -> str:
     if not soft_path:
         return "?"
     return soft_path.split(".")[-1]
+
+
+
+def soft_object_to_editor_path(soft_path: str) -> str:
+    """Return a shorter asset path for editor fields without changing stored data."""
+    value = (soft_path or "").strip()
+    if not value:
+        return value
+
+    object_path, separator, asset_name = value.rpartition(".")
+    if not separator or "/" not in object_path:
+        return value
+
+    path_asset_name = object_path.rsplit("/", 1)[-1]
+    if asset_name == path_asset_name:
+        return object_path
+    return value
+
+
+def editor_path_to_soft_object(editor_path: str) -> str:
+    """Convert a shortened /Game asset path back to a SoftObjectPath."""
+    value = (editor_path or "").strip()
+    if not value.startswith("/Game/"):
+        return value
+
+    leaf = value.rsplit("/", 1)[-1]
+    if not leaf or "." in leaf:
+        return value
+    return f"{value}.{leaf}"
 
 
 class TaskRuntimeStatus:
@@ -589,9 +618,9 @@ class TaskEditor(tk.Toplevel):
         self.configure(bg=UI_THEME["panel"])
 
         self.var_uproj = StringVar(value=(task.uproject if task else ""))
-        self.var_level = StringVar(value=(task.level if task else ""))
-        self.var_seq = StringVar(value=(task.sequence if task else ""))
-        self.var_preset = StringVar(value=(task.preset if task else ""))
+        self.var_level = StringVar(value=(soft_object_to_editor_path(task.level) if task else ""))
+        self.var_seq = StringVar(value=(soft_object_to_editor_path(task.sequence) if task else ""))
+        self.var_preset = StringVar(value=(soft_object_to_editor_path(task.preset) if task else ""))
         self.var_output_dir = StringVar(value=(task.output_dir if task else ""))
 
         frm = tk.Frame(self, padx=10, pady=10, bg=UI_THEME["panel"])
@@ -617,7 +646,7 @@ class TaskEditor(tk.Toplevel):
             p = filedialog.askopenfilename(title="Select MAP .umap/.uasset", filetypes=[("Unreal Map/Asset", "*.umap *.uasset")])
             if p:
                 try:
-                    self.var_level.set(fs_to_soft_object(p))
+                    self.var_level.set(soft_object_to_editor_path(fs_to_soft_object(p)))
                 except Exception as e:
                     messagebox.showerror("Level error", str(e))
 
@@ -625,7 +654,7 @@ class TaskEditor(tk.Toplevel):
             p = filedialog.askopenfilename(title="Select LevelSequence .uasset", filetypes=[("Unreal Asset", "*.uasset")])
             if p:
                 try:
-                    self.var_seq.set(fs_to_soft_object(p))
+                    self.var_seq.set(soft_object_to_editor_path(fs_to_soft_object(p)))
                 except Exception as e:
                     messagebox.showerror("Sequence error", str(e))
 
@@ -633,7 +662,7 @@ class TaskEditor(tk.Toplevel):
             p = filedialog.askopenfilename(title="Select MRQ Preset .uasset", filetypes=[("Unreal Asset", "*.uasset")])
             if p:
                 try:
-                    self.var_preset.set(fs_to_soft_object(p))
+                    self.var_preset.set(soft_object_to_editor_path(fs_to_soft_object(p)))
                 except Exception as e:
                     messagebox.showerror("Preset error", str(e))
 
@@ -644,9 +673,9 @@ class TaskEditor(tk.Toplevel):
                 self.var_output_dir.set(p.replace("\\", "/"))
 
         row("Project (.uproject)", self.var_uproj, pick_uproj)
-        row("Map (SoftObjectPath)", self.var_level, pick_level, "e.g.: /Game/Maps/MyMap.MyMap")
-        row("Level Sequence", self.var_seq, pick_seq, "e.g.: /Game/Cinematics/Shot.Shot")
-        row("MRQ Preset", self.var_preset, pick_preset, "e.g.: /Game/Cinematics/MoviePipeline/Presets/High.High")
+        row("Map", self.var_level, pick_level, "e.g.: /Game/Maps/MyMap")
+        row("Level Sequence", self.var_seq, pick_seq, "e.g.: /Game/Cinematics/Shot")
+        row("MRQ Preset", self.var_preset, pick_preset, "e.g.: /Game/Cinematics/MoviePipeline/Presets/High")
         row(
             "Output Directory",
             self.var_output_dir,
@@ -662,9 +691,9 @@ class TaskEditor(tk.Toplevel):
     def on_ok(self):
         t = RenderTask(
             uproject=self.var_uproj.get().strip(),
-            level=self.var_level.get().strip(),
-            sequence=self.var_seq.get().strip(),
-            preset=self.var_preset.get().strip(),
+            level=editor_path_to_soft_object(self.var_level.get()),
+            sequence=editor_path_to_soft_object(self.var_seq.get()),
+            preset=editor_path_to_soft_object(self.var_preset.get()),
             output_dir=self.var_output_dir.get().strip(),
             notes=(self.source_task.notes if self.source_task else ""),
             added_at=(self.source_task.added_at if self.source_task else current_task_timestamp()),
@@ -3365,14 +3394,14 @@ def run_qt_shell() -> int:
             layout.addLayout(form)
 
             self.project_edit = QLineEdit(task.uproject if task else "")
-            self.level_edit = QLineEdit(task.level if task else "")
-            self.sequence_edit = QLineEdit(task.sequence if task else "")
-            self.preset_edit = QLineEdit(task.preset if task else "")
+            self.level_edit = QLineEdit(soft_object_to_editor_path(task.level) if task else "")
+            self.sequence_edit = QLineEdit(soft_object_to_editor_path(task.sequence) if task else "")
+            self.preset_edit = QLineEdit(soft_object_to_editor_path(task.preset) if task else "")
             self.output_edit = QLineEdit(task.output_dir if task else "")
 
             rows = (
                 ("Project (.uproject)", self.project_edit, self._browse_project),
-                ("Map (SoftObjectPath)", self.level_edit, self._browse_level),
+                ("Map", self.level_edit, self._browse_level),
                 ("Level Sequence", self.sequence_edit, self._browse_sequence),
                 ("MRQ Preset", self.preset_edit, self._browse_preset),
                 ("Output Directory", self.output_edit, self._browse_output),
@@ -3409,7 +3438,7 @@ def run_qt_shell() -> int:
             if not path:
                 return
             try:
-                edit.setText(fs_to_soft_object(path))
+                edit.setText(soft_object_to_editor_path(fs_to_soft_object(path)))
             except Exception as exc:
                 QMessageBox.critical(self, title, str(exc))
 
@@ -3421,9 +3450,9 @@ def run_qt_shell() -> int:
         def _accept(self) -> None:
             task = RenderTask(
                 uproject=self.project_edit.text().strip(),
-                level=self.level_edit.text().strip(),
-                sequence=self.sequence_edit.text().strip(),
-                preset=self.preset_edit.text().strip(),
+                level=editor_path_to_soft_object(self.level_edit.text()),
+                sequence=editor_path_to_soft_object(self.sequence_edit.text()),
+                preset=editor_path_to_soft_object(self.preset_edit.text()),
                 output_dir=self.output_edit.text().strip(),
                 notes=(self.source_task.notes if self.source_task else ""),
                 added_at=(self.source_task.added_at if self.source_task else current_task_timestamp()),
