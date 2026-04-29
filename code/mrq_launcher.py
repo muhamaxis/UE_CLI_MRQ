@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.10.14"
+APP_VERSION = "1.10.15"
 
 UI_THEME = {
     "bg": "#111318",
@@ -1517,7 +1517,7 @@ class MRQLauncher(tk.Tk):
 
         quick = tk.Frame(parent, bg=UI_THEME["panel"])
         quick.pack(fill=tk.X, pady=(0, 10))
-        self._make_button(quick, "Copy Command", self.copy_command_preview).pack(fill=tk.X, pady=(0, 6))
+        self._make_button(quick, "Validate", self.validate_queue_tasks, variant="primary").pack(fill=tk.X, pady=(0, 6))
         self._make_button(quick, "Open Output Folder", self.open_selected_output_dir).pack(fill=tk.X, pady=(0, 6))
         self._make_button(quick, "Fix Project Path", self.fix_project_path_for_queue).pack(fill=tk.X)
 
@@ -2201,6 +2201,16 @@ class MRQLauncher(tk.Tk):
                 self._log(f"[Validation] Task {idx} {result.status}: {result.message}")
                 for detail in result.details:
                     self._log(f"[Validation]   {detail}")
+
+    def validate_queue_tasks(self) -> None:
+        """Run local path validation for all current queue tasks on demand."""
+        if not self.settings.tasks:
+            messagebox.showinfo("Validate", "No tasks to validate.")
+            return
+        self._validate_loaded_queue_tasks()
+        self.refresh_tree()
+        self._update_inspector()
+        self._log("[Validation] Manual validation completed.")
 
     def _filter_tasks_by_loaded_validation(self, tasks: List[RenderTask]) -> List[RenderTask]:
         eligible = []
@@ -4976,9 +4986,9 @@ def run_qt_shell() -> int:
                 self.inspector_labels[key] = label
                 layout.addWidget(label)
             layout.addStretch(1)
-            copy_button = self._mark_button(QPushButton("Copy Command"), "primary")
-            copy_button.clicked.connect(self.copy_command_preview)
-            layout.addWidget(copy_button)
+            validate_button = self._mark_button(QPushButton("Validate"), "primary")
+            validate_button.clicked.connect(self.validate_queue_tasks)
+            layout.addWidget(validate_button)
             fix_button = self._mark_button(QPushButton("Fix Project Path"))
             fix_button.clicked.connect(self.fix_project_path_for_queue)
             layout.addWidget(fix_button)
@@ -5440,6 +5450,18 @@ def run_qt_shell() -> int:
                     self._append_log(f"[Validation] Task {idx} {result.status}: {result.message}")
                     for detail in result.details:
                         self._append_log(f"[Validation]   {detail}")
+
+        def validate_queue_tasks(self) -> None:
+            """Run local path validation for all current queue tasks on demand."""
+            if not self.settings.tasks:
+                QMessageBox.information(self, "Validate", "No tasks to validate.")
+                return
+            self._validate_loaded_queue_tasks()
+            self.refresh_queue_view()
+            self._update_inspector()
+            self._update_status_bar()
+            self._append_log("[Validation] Manual validation completed.")
+            self.statusBar().showMessage("Validation completed.", 5000)
 
         def _filter_tasks_by_loaded_validation(self, tasks: List[RenderTask]) -> List[RenderTask]:
             eligible = []
