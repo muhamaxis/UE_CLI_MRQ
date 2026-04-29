@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.10.7"
+APP_VERSION = "1.10.8"
 
 UI_THEME = {
     "bg": "#111318",
@@ -1320,7 +1320,6 @@ class MRQLauncher(tk.Tk):
             "level": StringVar(value="-"),
             "sequence": StringVar(value="-"),
             "preset": StringVar(value="-"),
-            "output": StringVar(value="-"),
             "notes": StringVar(value="-"),
             "validation": StringVar(value="Validation: -"),
         }
@@ -1332,7 +1331,6 @@ class MRQLauncher(tk.Tk):
             ("Level", "level"),
             ("Sequence", "sequence"),
             ("Preset", "preset"),
-            ("Output Directory", "output"),
             ("Description", "notes"),
         )
         for title, key in fields:
@@ -1939,7 +1937,6 @@ class MRQLauncher(tk.Tk):
             self.inspector_vars["level"].set("-")
             self.inspector_vars["sequence"].set("-")
             self.inspector_vars["preset"].set("-")
-            self.inspector_vars["output"].set("-")
             self.inspector_vars["notes"].set("-")
             self.inspector_vars["validation"].set("Validation: -")
             return
@@ -1950,10 +1947,9 @@ class MRQLauncher(tk.Tk):
         self.inspector_vars["job"].set(job_name)
         self.inspector_vars["enabled"].set("Yes" if task.enabled else "No")
         self.inspector_vars["uproject"].set(task.uproject or "-")
-        self.inspector_vars["level"].set(task.level or "-")
-        self.inspector_vars["sequence"].set(task.sequence or "-")
-        self.inspector_vars["preset"].set(task.preset or "-")
-        self.inspector_vars["output"].set(task.output_dir or "Preset default")
+        self.inspector_vars["level"].set(soft_object_to_editor_path(task.level) or "-")
+        self.inspector_vars["sequence"].set(soft_object_to_editor_path(task.sequence) or "-")
+        self.inspector_vars["preset"].set(soft_object_to_editor_path(task.preset) or "-")
         self.inspector_vars["notes"].set("-")
         self.inspector_vars["validation"].set(f"Validation: {'Ready' if valid else 'Incomplete'}")
 
@@ -4109,7 +4105,7 @@ def run_qt_shell() -> int:
                 ("job", "Job Name: No selection"), ("enabled", "Enabled: -"),
                 ("project", "Project: -"), ("level", "Level: -"),
                 ("sequence", "Sequence: -"), ("preset", "Preset: -"),
-                ("output", "Output Directory: -"), ("validation", "Validation: -"),
+                ("validation", "Validation: -"),
             ):
                 label = QLabel(text)
                 label.setObjectName("InspectorField")
@@ -4566,15 +4562,16 @@ def run_qt_shell() -> int:
                 values = {
                     "job": "Job Name: No selection", "enabled": "Enabled: -", "project": "Project: -",
                     "level": "Level: -", "sequence": "Sequence: -", "preset": "Preset: -",
-                    "output": "Output Directory: -", "validation": "Validation: -",
+                    "validation": "Validation: -",
                 }
             else:
                 valid = all([task.uproject, task.level, task.sequence, task.preset])
                 values = {
                     "job": f"Job Name: {soft_name(task.sequence)}", "enabled": f"Enabled: {'Yes' if task.enabled else 'No'}",
-                    "project": f"Project: {task.uproject or '-'}", "level": f"Level: {task.level or '-'}",
-                    "sequence": f"Sequence: {task.sequence or '-'}", "preset": f"Preset: {task.preset or '-'}",
-                    "output": f"Output Directory: {task.output_dir or 'Preset default'}",
+                    "project": f"Project: {task.uproject or '-'}",
+                    "level": f"Level: {soft_object_to_editor_path(task.level) or '-'}",
+                    "sequence": f"Sequence: {soft_object_to_editor_path(task.sequence) or '-'}",
+                    "preset": f"Preset: {soft_object_to_editor_path(task.preset) or '-'}",
                     "validation": f"Validation: {'Ready' if valid else 'Incomplete'}",
                 }
             for key, value in values.items():
