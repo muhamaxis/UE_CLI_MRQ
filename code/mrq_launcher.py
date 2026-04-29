@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.10.6"
+APP_VERSION = "1.10.7"
 
 UI_THEME = {
     "bg": "#111318",
@@ -30,10 +30,13 @@ UI_THEME = {
     "text": "#E7ECF3",
     "muted": "#9CA8B7",
     "accent": "#4EA1FF",
+    "accent_hover": "#6BB2FF",
     "accent_soft": "#223A56",
     "success": "#2D6A4F",
     "warning": "#8A6A2F",
     "danger": "#8B3A46",
+    "danger_hover": "#A64957",
+    "panel_soft_hover": "#2B3442",
     "entry": "#10141A",
 }
 
@@ -69,6 +72,27 @@ def app_icon_path() -> str:
 def app_header_logo_path() -> str:
     """Return the header logo path used by full-size launcher views."""
     return resource_path(APP_HEADER_LOGO_RELATIVE_PATH)
+
+
+def apply_tk_button_hover(button: tk.Button, normal_bg: str, hover_bg: str, fg: str) -> None:
+    """Apply a consistent hover color to flat Tk buttons."""
+    def on_enter(_event):
+        try:
+            if str(button.cget("state")) != "disabled":
+                button.configure(bg=hover_bg, activebackground=hover_bg, fg=fg, activeforeground=fg)
+        except Exception:
+            pass
+
+    def on_leave(_event):
+        try:
+            if str(button.cget("state")) != "disabled":
+                button.configure(bg=normal_bg, activebackground=hover_bg, fg=fg, activeforeground=fg)
+        except Exception:
+            pass
+
+    button.configure(activebackground=hover_bg, activeforeground=fg)
+    button.bind("<Enter>", on_enter, add="+")
+    button.bind("<Leave>", on_leave, add="+")
 
 
 def detect_default_unreal_cmd() -> str:
@@ -674,34 +698,38 @@ class TaskEditor(tk.Toplevel):
         btn.pack(fill="x", pady=10)
         btn_center = tk.Frame(btn, bg=UI_THEME["panel"])
         btn_center.pack(anchor="center")
-        tk.Button(
+        ok_button = tk.Button(
             btn_center,
             text="OK",
             command=self.on_ok,
             width=10,
             bg=UI_THEME["accent"],
             fg="#FFFFFF",
-            activebackground=UI_THEME["accent"],
+            activebackground=UI_THEME["accent_hover"],
             activeforeground="#FFFFFF",
             relief=tk.FLAT,
             bd=0,
             padx=12,
             pady=6,
-        ).pack(side=tk.LEFT, padx=4)
-        tk.Button(
+        )
+        apply_tk_button_hover(ok_button, UI_THEME["accent"], UI_THEME["accent_hover"], "#FFFFFF")
+        ok_button.pack(side=tk.LEFT, padx=4)
+        cancel_button = tk.Button(
             btn_center,
             text="Cancel",
             command=self.destroy,
             width=10,
             bg=UI_THEME["danger"],
             fg="#FFFFFF",
-            activebackground=UI_THEME["danger"],
+            activebackground=UI_THEME["danger_hover"],
             activeforeground="#FFFFFF",
             relief=tk.FLAT,
             bd=0,
             padx=12,
             pady=6,
-        ).pack(side=tk.LEFT, padx=4)
+        )
+        apply_tk_button_hover(cancel_button, UI_THEME["danger"], UI_THEME["danger_hover"], "#FFFFFF")
+        cancel_button.pack(side=tk.LEFT, padx=4)
 
     def on_ok(self):
         t = RenderTask(
@@ -991,11 +1019,11 @@ class MRQLauncher(tk.Tk):
 
     def _make_button(self, parent, text, command, variant="secondary", width=None):
         palette = {
-            "primary": (UI_THEME["accent"], "#FFFFFF"),
-            "danger": (UI_THEME["danger"], "#FFFFFF"),
-            "secondary": (UI_THEME["panel_soft"], UI_THEME["text"]),
+            "primary": (UI_THEME["accent"], UI_THEME["accent_hover"], "#FFFFFF"),
+            "danger": (UI_THEME["danger"], UI_THEME["danger_hover"], "#FFFFFF"),
+            "secondary": (UI_THEME["panel_soft"], UI_THEME["panel_soft_hover"], UI_THEME["text"]),
         }
-        bg, fg = palette.get(variant, palette["secondary"])
+        bg, hover_bg, fg = palette.get(variant, palette["secondary"])
         btn = tk.Button(
             parent,
             text=text,
@@ -1003,7 +1031,7 @@ class MRQLauncher(tk.Tk):
             width=width,
             bg=bg,
             fg=fg,
-            activebackground=bg,
+            activebackground=hover_bg,
             activeforeground=fg,
             relief=tk.FLAT,
             bd=0,
@@ -1012,6 +1040,7 @@ class MRQLauncher(tk.Tk):
             highlightthickness=0,
             cursor="hand2",
         )
+        apply_tk_button_hover(btn, bg, hover_bg, fg)
         return btn
 
     def _make_entry(self, parent, textvariable=None, width=None):
@@ -3181,6 +3210,16 @@ def run_qt_shell() -> int:
                 background-color: #3A1F24;
                 border-color: #6B2B32;
                 color: #FFB3B0;
+            }}
+            QPushButton[role="danger"]:hover {{
+                background-color: #5A2730;
+                border-color: #A64957;
+                color: #FFFFFF;
+            }}
+            QPushButton[role="danger"]:pressed {{
+                background-color: #7A303B;
+                border-color: #C85A67;
+                color: #FFFFFF;
             }}
             QPushButton[role="ghost"] {{
                 background-color: transparent;
