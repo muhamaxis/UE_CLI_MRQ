@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.10.8"
+APP_VERSION = "1.10.9"
 
 UI_THEME = {
     "bg": "#111318",
@@ -4142,8 +4142,8 @@ def run_qt_shell() -> int:
             controls.addWidget(stop_all)
             controls.addStretch(1)
             for text, callback in (
-                ("Open Logs Folder", self.open_logs_folder),
-                ("Open Last Log", self.open_last_log_for_selected),
+                ("Save Queue Log", self.save_queue_log),
+                ("Open Last Queue Log", self.open_last_queue_log),
             ):
                 button = self._mark_button(QPushButton(text))
                 button.clicked.connect(callback)
@@ -4182,15 +4182,6 @@ def run_qt_shell() -> int:
             copy_button = self._mark_button(QPushButton("Copy Command"))
             copy_button.clicked.connect(self.copy_command_preview)
             log_title_row.addWidget(copy_button)
-            save_log_button = self._mark_button(QPushButton("Save Queue Log"))
-            save_log_button.clicked.connect(self.save_queue_log)
-            log_title_row.addWidget(save_log_button)
-            load_task_button = self._mark_button(QPushButton("Load Task(s)"))
-            load_task_button.clicked.connect(self.load_task_dialog)
-            log_title_row.addWidget(load_task_button)
-            save_task_button = self._mark_button(QPushButton("Save Selected Task(s)"))
-            save_task_button.clicked.connect(self.save_selected_tasks_dialog)
-            log_title_row.addWidget(save_task_button)
             log_shell.addLayout(log_title_row)
 
             self.diagnostics_log_body = QFrame(self.diagnostics_log_panel)
@@ -5142,6 +5133,24 @@ def run_qt_shell() -> int:
                 self._append_log(f"[Qt Logs] Queue summary saved: {os.path.basename(path)}")
             except Exception as exc:
                 QMessageBox.critical(self, "Save Queue Log", str(exc))
+
+        def open_last_queue_log(self) -> None:
+            logs_dir = self._logs_dir()
+            try:
+                files = [
+                    name for name in os.listdir(logs_dir)
+                    if name.startswith("Queue_Log_") and name.endswith(".log")
+                ]
+            except FileNotFoundError:
+                files = []
+            except Exception as exc:
+                QMessageBox.critical(self, "Open Last Queue Log", str(exc))
+                return
+            if not files:
+                QMessageBox.information(self, "Open Last Queue Log", "No queue logs found.")
+                return
+            files.sort(reverse=True)
+            self._open_path(os.path.join(logs_dir, files[0]))
 
         def _open_path(self, path: str) -> None:
             try:
