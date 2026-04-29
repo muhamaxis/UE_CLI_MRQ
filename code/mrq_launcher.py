@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.10.15"
+APP_VERSION = "1.10.17"
 
 UI_THEME = {
     "bg": "#111318",
@@ -2212,12 +2212,27 @@ class MRQLauncher(tk.Tk):
         self._update_inspector()
         self._log("[Validation] Manual validation completed.")
 
+    def _validation_for_enqueue(self, task: RenderTask) -> TaskValidationResult:
+        """Validate a task before it can enter the runtime queue."""
+        idx = self._find_task_index_by_identity(task)
+        if idx is None:
+            return validate_task_paths(task)
+        result = self._validation_for_index(idx)
+        if result is None or result.status == "Not checked":
+            result = validate_task_paths(task)
+            self.validation_results[idx] = result
+        return result
+
     def _filter_tasks_by_loaded_validation(self, tasks: List[RenderTask]) -> List[RenderTask]:
         eligible = []
         skipped = 0
+        validation_changed = False
         for task in tasks:
             idx = self._find_task_index_by_identity(task)
-            result = self._validation_for_index(idx)
+            before = self.validation_results[idx] if idx is not None and idx < len(self.validation_results) else None
+            result = self._validation_for_enqueue(task)
+            if before is None or before.status == "Not checked":
+                validation_changed = True
             if result is not None and result.is_blocking:
                 skipped += 1
                 self._log(f"[Validation] Skipped {soft_name(task.sequence)}: {result.status} - {result.message}")
@@ -2229,7 +2244,24 @@ class MRQLauncher(tk.Tk):
             eligible.append(task)
         if skipped:
             self._log(f"[Validation] Skipped {skipped} task(s) because validation is blocking.")
+        if validation_changed:
+            self._log("[Validation] Queue candidates were validated before enqueue.")
         return eligible
+
+    def _task_can_enter_session_queue(self, idx: int) -> bool:
+        """Return True when a task is allowed to become Ready/Queued."""
+        if not (0 <= idx < len(self.settings.tasks)):
+            return False
+        task = self.settings.tasks[idx]
+        result = self._validation_for_enqueue(task)
+        if result.is_blocking:
+            self._log(f"[Validation] Cannot add {soft_name(task.sequence)} to queue: {result.status} - {result.message}")
+            for detail in result.details:
+                self._log(f"[Validation]   {detail}")
+            return False
+        if result.status == "Unknown":
+            self._log(f"[Validation] Warning for {soft_name(task.sequence)}: {result.message}")
+        return True
 
     def _selected_or_first_project_basename(self) -> str:
         selected = self._selected_task()
@@ -2670,6 +2702,8 @@ class MRQLauncher(tk.Tk):
             if current_status.startswith("Rendering"):
                 continue
             task = self.settings.tasks[idx]
+            if not task.enabled and not self._task_can_enter_session_queue(idx):
+                continue
             task.enabled = not task.enabled
             self.state[idx] = default_task_state()
             if not task.enabled:
@@ -2679,13 +2713,19 @@ class MRQLauncher(tk.Tk):
         self.refresh_tree()
 
     def set_enabled_all(self, val: bool):
+        skipped = 0
         for idx, t in enumerate(self.settings.tasks):
             if self.state[idx].get("status", "Ready").startswith("Rendering"):
+                continue
+            if val and not self._task_can_enter_session_queue(idx):
+                skipped += 1
                 continue
             t.enabled = val
             self.state[idx] = default_task_state()
         if not val:
             self._remove_tasks_from_runtime_queue(self.settings.tasks)
+        if skipped:
+            self._log(f"[Validation] {skipped} task(s) were not enabled because validation is blocking.")
         self.refresh_tree()
 
     def toggle_selected(self):
@@ -3000,6 +3040,10 @@ class MRQLauncher(tk.Tk):
         # Preload tasks into runtime queue via helper (sets statuses too)
         if tasks:
             self._enqueue_tasks(tasks, log_prefix="== Enqueued ")
+            if self.runtime_queue.empty() and not self.worker_running:
+                self._log("[Validation] No valid tasks to enqueue.")
+                messagebox.showinfo("Render", "No valid tasks to render. Check the Validate column and Job Inspector details.")
+                return
         if self.settings.auto_minimal_on_render and not self.minimal_mode:
             self.after(0, self.enter_minimal_mode)
         retries = int(self.var_retries.get())
@@ -3242,12 +3286,13 @@ class MRQLauncher(tk.Tk):
     def _task_identity_set_from_runtime_queue(self) -> set:
         return self.runtime_queue.task_identity_set()
 
-    def _enqueue_tasks(self, tasks: List[RenderTask], mark_queued: bool = True, log_prefix: str = "[+] Added "):
+    def _enqueue_tasks(self, tasks: List[RenderTask], mark_queued: bool = True, log_prefix: str = "[+] Added ") -> bool:
         """Enqueue tasks through the runtime queue coordinator."""
         tasks = self._filter_tasks_by_loaded_validation(tasks)
         changed = self.runtime_queue.enqueue_tasks(tasks, mark_queued=mark_queued, log_prefix=log_prefix)
-        if changed:
+        if changed or not tasks:
             self.refresh_tree()
+        return changed
 
     def _clear_pending_runtime_queue(self, status_text: str = TaskRuntimeStatus.CANCELLED_QUEUE):
         """Remove waiting tasks through the runtime queue coordinator."""
@@ -5463,12 +5508,27 @@ def run_qt_shell() -> int:
             self._append_log("[Validation] Manual validation completed.")
             self.statusBar().showMessage("Validation completed.", 5000)
 
+        def _validation_for_enqueue(self, task: RenderTask) -> TaskValidationResult:
+            """Validate a task before it can enter the runtime queue."""
+            idx = self._find_task_index_by_identity(task)
+            if idx is None:
+                return validate_task_paths(task)
+            result = self._validation_for_index(idx)
+            if result is None or result.status == "Not checked":
+                result = validate_task_paths(task)
+                self.validation_results[idx] = result
+            return result
+
         def _filter_tasks_by_loaded_validation(self, tasks: List[RenderTask]) -> List[RenderTask]:
             eligible = []
             skipped = 0
+            validation_changed = False
             for task in tasks:
                 idx = self._find_task_index_by_identity(task)
-                result = self._validation_for_index(idx)
+                before = self.validation_results[idx] if idx is not None and idx < len(self.validation_results) else None
+                result = self._validation_for_enqueue(task)
+                if before is None or before.status == "Not checked":
+                    validation_changed = True
                 if result is not None and result.is_blocking:
                     skipped += 1
                     self._append_log(f"[Validation] Skipped {soft_name(task.sequence)}: {result.status} - {result.message}")
@@ -5480,7 +5540,25 @@ def run_qt_shell() -> int:
                 eligible.append(task)
             if skipped:
                 self._append_log(f"[Validation] Skipped {skipped} task(s) because validation is blocking.")
+            if validation_changed:
+                self._append_log("[Validation] Queue candidates were validated before enqueue.")
             return eligible
+
+        def _task_can_enter_session_queue(self, idx: int) -> bool:
+            """Return True when a task is allowed to become Ready/Queued."""
+            if not (0 <= idx < len(self.settings.tasks)):
+                return False
+            task = self.settings.tasks[idx]
+            result = self._validation_for_enqueue(task)
+            if result.is_blocking:
+                self._append_log(f"[Validation] Cannot add {soft_name(task.sequence)} to queue: {result.status} - {result.message}")
+                for detail in result.details:
+                    self._append_log(f"[Validation]   {detail}")
+                self.statusBar().showMessage("Task was not added: validation is blocking.", 5000)
+                return False
+            if result.status == "Unknown":
+                self._append_log(f"[Validation] Warning for {soft_name(task.sequence)}: {result.message}")
+            return True
 
         def fix_project_path_for_queue(self) -> None:
             if not self.settings.tasks:
@@ -5796,6 +5874,8 @@ def run_qt_shell() -> int:
                     disabled_tasks.append(task)
                     disabled_count += 1
                 else:
+                    if not self._task_can_enter_session_queue(idx):
+                        continue
                     task.enabled = True
                     self.queue_order_by_task_id[task_id] = self._next_queue_order()
                     enabled_count += 1
@@ -5857,14 +5937,20 @@ def run_qt_shell() -> int:
             self.runtime_queue.clear_pending(TaskRuntimeStatus.CANCELLED_QUEUE)
             self.queue_order_by_task_id.clear()
             order = 1
+            skipped = 0
             for idx in toggleable_indices:
                 task = self.settings.tasks[idx]
+                if not self._task_can_enter_session_queue(idx):
+                    skipped += 1
+                    continue
                 task.enabled = True
                 self.state[idx] = default_task_state()
                 self.queue_order_by_task_id[id(task)] = order
                 order += 1
             self.refresh_queue_view()
             self._append_log(f"[Qt] Toggle All enabled and ordered {order - 1} task(s).")
+            if skipped:
+                self._append_log(f"[Validation] Toggle All skipped {skipped} task(s) because validation is blocking.")
 
         def render_selected(self) -> None:
             tasks = self._collect(only_selected=True)
@@ -5899,8 +5985,10 @@ def run_qt_shell() -> int:
         def _enqueue_tasks(self, tasks: List[RenderTask]) -> bool:
             tasks = self._filter_tasks_by_loaded_validation(tasks)
             changed = self.runtime_queue.enqueue_tasks(tasks, mark_queued=True, log_prefix="[Qt] Queued ")
-            if changed:
+            if changed or not tasks:
                 self.refresh_queue_view()
+                self._update_inspector()
+                self._update_status_bar()
             return changed
 
         def _run_queue(self, tasks: List[RenderTask]) -> None:
@@ -5914,7 +6002,7 @@ def run_qt_shell() -> int:
             if self.worker_running:
                 return
             if self.runtime_queue.empty():
-                QMessageBox.information(self, "Render", "No tasks to run")
+                QMessageBox.information(self, "Render", "No valid tasks to render. Check the Validate column and Job Inspector details.")
                 return
             self.stop_all = False
             self.cancel_current_requested = False
