@@ -3,9 +3,8 @@ setlocal enableextensions enabledelayedexpansion
 
 REM ===== Config =====
 set NAME=MRQLauncherQT
-set VER=1.10.4
+set VER=1.10.24
 set LOG=build_qt_log.txt
-set QT_HOOK=_qt_runtime_hook.py
 
 REM Always build from the folder where this BAT is located.
 cd /d "%~dp0" || goto :fail
@@ -49,7 +48,6 @@ REM ===== Clean =====
 for /d %%D in (build dist __pycache__) do if exist "%%D" rmdir /s /q "%%D"
 del /q "%NAME%.spec" 2>nul
 del /q "%LOG%" 2>nul
-del /q "%QT_HOOK%" 2>nul
 
 if exist ".venv" (
   echo [i] Using existing .venv
@@ -74,12 +72,6 @@ echo [i] Main script: %MAIN_ABS%
 echo [i] App icon: %ICON_ABS%
 echo [i] Header logo: %LOGO_ABS%
 
-echo [i] Creating Qt runtime hook...
-(
-  echo import sys
-  echo if "--qt" not in sys.argv:
-  echo     sys.argv.append("--qt"^)
-) > "%QT_HOOK%"
 
 REM IMPORTANT:
 REM Do not generate/pass a temporary --version-file here.
@@ -98,7 +90,6 @@ pyinstaller ^
   --icon "%ICON_ABS%" ^
   --add-data "%ICON_ABS%;resources" ^
   --add-data "%LOGO_ABS%;resources" ^
-  --runtime-hook "%QT_HOOK%" ^
   --collect-all PySide6 ^
   > "%LOG%" 2>&1
 
@@ -122,7 +113,6 @@ pyinstaller ^
   --icon "%ICON_ABS%" ^
   --add-data "%ICON_ABS%;resources" ^
   --add-data "%LOGO_ABS%;resources" ^
-  --runtime-hook "%QT_HOOK%" ^
   --collect-all PySide6 ^
   >> "%LOG%" 2>&1
 
@@ -151,5 +141,4 @@ echo     Please send build_qt_log.txt if it fails.
 exit /b 1
 
 :done
-del /q "%QT_HOOK%" 2>nul
 endlocal

@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.10.23"
+APP_VERSION = "1.10.24"
 
 UI_THEME = {
     "bg": "#111318",
@@ -3610,7 +3610,7 @@ def build_unreal_command_preview(settings: AppSettings, task: RenderTask) -> str
 # -------------------------------------------------
 
 def run_qt_shell() -> int:
-    """Launch the PySide6 queue workspace without replacing the Tkinter launcher."""
+    """Launch the primary PySide6 production UI."""
     try:
         from PySide6.QtCore import QEvent, Qt, QTimer, QSize
         from PySide6.QtGui import QColor, QBrush, QIcon, QPalette, QFont, QPainter, QPen, QPixmap
@@ -6603,7 +6603,8 @@ def run_qt_shell() -> int:
 # -------------------------------------------------
 
 if __name__ == "__main__":
-    if "--qt" in sys.argv:
+    if "--tk" in sys.argv:
+        app = MRQLauncher()
+        app.mainloop()
+    else:
         raise SystemExit(run_qt_shell())
-    app = MRQLauncher()
-    app.mainloop()
