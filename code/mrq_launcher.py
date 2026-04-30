@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.10.22"
+APP_VERSION = "1.10.23"
 
 UI_THEME = {
     "bg": "#111318",
@@ -5208,7 +5208,7 @@ def run_qt_shell() -> int:
             for text, callback, role in (
                 ("Render Enabled", self.render_enabled, "warning"),
                 ("Render Selected", self.render_selected, "warning"),
-                ("Append Selected to Render Queue", self.append_selected_to_render_queue, "secondary"),
+                ("Queue Selected", self.queue_selected_or_enabled, "secondary"),
                 ("Clear Status", self.clear_status_selected, "secondary"),
                 ("Stop Current Render", self.cancel_current, "secondary"),
             ):
@@ -5375,11 +5375,9 @@ def run_qt_shell() -> int:
         def _set_minimal_columns(self, enabled: bool) -> None:
             if not self.table:
                 return
-            # Minimal Mode keeps Running Time visible and hides only absolute timestamps.
-            start_column = self.COLUMNS.index("Start")
-            end_column = self.COLUMNS.index("End")
-            for column in (start_column, end_column):
-                self.table.setColumnHidden(column, enabled)
+            # Minimal Mode matches the production baseline columns and keeps Running Time visible.
+            for column_name in ("Order", "Start", "End"):
+                self.table.setColumnHidden(self.COLUMNS.index(column_name), enabled)
 
         def _resize_minimal_window(self) -> None:
             visible_rows = self.table.rowCount() if self.table else 0
@@ -5412,12 +5410,18 @@ def run_qt_shell() -> int:
             return max(self.queue_order_by_task_id.values(), default=0) + 1
 
         def _ordered_task_indices(self) -> List[int]:
+            """Return enabled task indices, preferring explicit session order when present."""
             ordered = []
+            unordered = []
             for idx, task in enumerate(self.settings.tasks):
+                if not task.enabled:
+                    continue
                 order = self._queue_order_for_task(task)
-                if task.enabled and order is not None:
+                if order is not None:
                     ordered.append((order, idx))
-            return [idx for _order, idx in sorted(ordered)]
+                else:
+                    unordered.append(idx)
+            return [idx for _order, idx in sorted(ordered)] + unordered
 
         def _sort_tasks_by_session_order(self, tasks: List[RenderTask]) -> List[RenderTask]:
             positions = {id(task): pos for pos, task in enumerate(tasks)}
@@ -5463,10 +5467,10 @@ def run_qt_shell() -> int:
             source_indices = self._ordered_task_indices() if self.minimal_mode else list(range(len(self.settings.tasks)))
             for idx in source_indices:
                 task = self.settings.tasks[idx]
+                if self.minimal_mode and not task.enabled:
+                    continue
                 state = self.state[idx] if idx < len(self.state) else default_task_state()
                 order = self._queue_order_for_task(task)
-                if self.minimal_mode and order is None:
-                    continue
                 haystack = " ".join([
                     str(order or ""), task.uproject, task.level, task.sequence,
                     task.preset, task.output_dir, state.get("status", "Ready"),
@@ -6191,7 +6195,7 @@ def run_qt_shell() -> int:
         def render_enabled(self) -> None:
             tasks = self._collect(only_enabled=True)
             if not tasks:
-                QMessageBox.information(self, "Render Enabled", "No ordered ready tasks to run. Double-click tasks or use Toggle All first.")
+                QMessageBox.information(self, "Render Enabled", "No enabled tasks to run.")
                 return
             self._run_queue(tasks)
 
@@ -6209,7 +6213,13 @@ def run_qt_shell() -> int:
             self._enqueue_tasks(tasks)
 
         def queue_selected_or_enabled(self) -> None:
-            self.append_selected_to_render_queue()
+            tasks = self._collect(only_selected=True)
+            if not tasks:
+                tasks = self._collect(only_enabled=True)
+            if not tasks:
+                QMessageBox.information(self, "Queue Selected", "Nothing to enqueue: select tasks or enable some tasks.")
+                return
+            self._run_queue(tasks)
 
         def _enqueue_tasks(self, tasks: List[RenderTask]) -> bool:
             tasks = self._filter_tasks_by_loaded_validation(tasks)
