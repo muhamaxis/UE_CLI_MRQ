@@ -6,6 +6,7 @@ import threading
 import time
 import sys
 import shlex
+import re
 from dataclasses import dataclass, asdict, field
 from typing import List, Optional, Any
 from datetime import datetime, timedelta
@@ -14,7 +15,7 @@ from datetime import datetime, timedelta
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.10.25"
+APP_VERSION = "1.10.27"
 
 UI_THEME = {
     "bg": "#111318",
@@ -789,6 +790,8 @@ class RenderProcessController:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             bufsize=1,
         )
         return self.current_process
@@ -840,6 +843,8 @@ def build_unreal_command(settings: AppSettings, task: RenderTask) -> List[str]:
         f'-LevelSequence="{task.sequence or "<sequence>"}"',
         f'-MoviePipelineConfig="{task.preset or "<preset>"}"',
         "-log",
+        "-StdOut",
+        "-allowStdOutLogVerbosity",
     ]
     cmd.append("-windowed" if settings.windowed else "-fullscreen")
     cmd += [f"-ResX={int(settings.resx)}", f"-ResY={int(settings.resy)}"]
@@ -1863,6 +1868,7 @@ def run_qt_shell() -> int:
             self.cancel_current_requested = False
             self._current_global_idx: Optional[int] = None
             self._session_started_at: Optional[float] = None
+            self._last_progress_probe_logged: Optional[int] = None
             self.table = None
             self.filter_edit = None
             self.ue_path_edit = None
@@ -3542,6 +3548,7 @@ def run_qt_shell() -> int:
                     log_fp = None
                     self._current_global_idx = task_index
                     self.ui_events.put(TaskRuntimeEvent(TaskRuntimeEventType.TASK_STARTED, task_index, "Rendering 00:00:00", 0, start_time))
+                    self._last_progress_probe_logged = None
                     self._append_log(f"[Qt] [{local_counter}] Start try {attempt}/{retries + 1}: {' '.join(cmd)}")
                     try:
                         log_fp = open(logfile, "a", encoding="utf-8")
@@ -3571,6 +3578,9 @@ def run_qt_shell() -> int:
                                     progress = self._extract_progress(clean_line)
                                     if progress is not None:
                                         self.ui_events.put(TaskRuntimeEvent(TaskRuntimeEventType.PROGRESS_UPDATED, idx, progress=progress))
+                                        if progress != self._last_progress_probe_logged:
+                                            self._last_progress_probe_logged = progress
+                                            self._append_log(f"[Progress Probe] {progress}%")
                         except Exception as exc:
                             self._append_log(f"[Qt pump] {exc}")
                         finally:
@@ -3826,16 +3836,30 @@ def run_qt_shell() -> int:
 
 
         def _extract_progress(self, line: str) -> Optional[int]:
-            if "%" in line:
-                i = line.find("%")
-                j = i - 1
-                while j >= 0 and line[j].isdigit():
-                    j -= 1
-                digits = line[j + 1:i]
-                if digits.isdigit():
-                    value = int(digits)
-                    if 0 <= value <= 100:
-                        return value
+            """Extract MRQ progress percent from Unreal stdout/log lines."""
+            frame_match = re.search(
+                r"(?:Total\s+Frames|Frame)\s*:\s*([\d,]+)\s+of\s+([\d,]+)(?:\s*\((\d{1,3})%\))?",
+                line,
+                re.IGNORECASE,
+            )
+            if frame_match:
+                try:
+                    current = int(frame_match.group(1).replace(",", ""))
+                    total = int(frame_match.group(2).replace(",", ""))
+                except ValueError:
+                    current = 0
+                    total = 0
+                if total > 0:
+                    return max(0, min(100, round((current / total) * 100)))
+                explicit_percent = frame_match.group(3)
+                if explicit_percent and explicit_percent.isdigit():
+                    return max(0, min(100, int(explicit_percent)))
+
+            percent_match = re.search(r"(?<!\d)(\d{1,3})\s*%", line)
+            if percent_match:
+                value = int(percent_match.group(1))
+                if 0 <= value <= 100:
+                    return value
             return None
 
     app = QApplication.instance() or QApplication(sys.argv)
