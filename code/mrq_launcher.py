@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.10.26"
+APP_VERSION = "1.10.27"
 
 UI_THEME = {
     "bg": "#111318",
@@ -41,6 +41,7 @@ STATUS_PILL_THEME = {
     "rendering": {"bg": "#1E315B", "text": "#A8C9FF", "border": "#35518E"},
     "done": {"bg": "#2A3444", "text": "#E7ECF3", "border": "#3A4557"},
     "failed": {"bg": "#47232A", "text": "#FF9AA9", "border": "#6F313D"},
+    "cancelled": {"bg": "#4A3015", "text": "#FFB340", "border": "#8A5A1F"},
     "disabled": {"bg": "#2A313B", "text": "#C9D2DD", "border": "#404B59"},
     "skipped": {"bg": "#3A2A4B", "text": "#D7C7FF", "border": "#5C4777"},
 }
@@ -379,7 +380,7 @@ def get_status_display(status: str, enabled: bool) -> str:
         return "Disabled"
     status = (status or "Ready").strip()
     if status.startswith("Cancelled"):
-        return "Failed"
+        return "Cancelled"
     if status.startswith("Failed"):
         return "Failed"
     if status.startswith("Done"):
@@ -396,7 +397,9 @@ def get_status_kind(status: str, enabled: bool) -> str:
     if not enabled:
         return "disabled"
     status = (status or "Ready").strip()
-    if status.startswith("Cancelled") or status.startswith("Failed"):
+    if status.startswith("Cancelled"):
+        return "cancelled"
+    if status.startswith("Failed"):
         return "failed"
     if status.startswith("Done"):
         return "done"
