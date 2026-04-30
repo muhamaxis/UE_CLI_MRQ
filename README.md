@@ -425,10 +425,6 @@ mrq_logs/
 Project documentation files:
 
 ```text
-MRQ_TASK_SPEC_GUIDE.md
-mrq_launcher_project_guardrails.md
-BASELINE_BEHAVIOR.md
-MRQ_QT_PARITY_AUDIT.md
 README.md
 ```
 
