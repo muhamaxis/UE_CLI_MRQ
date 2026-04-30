@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.10.25"
+APP_VERSION = "1.10.26"
 
 UI_THEME = {
     "bg": "#111318",
@@ -1694,6 +1694,20 @@ def run_qt_shell() -> int:
             except Exception:
                 return 10**9
 
+        def _duration_to_seconds(self, value: str) -> int:
+            parts = str(value or "").strip().split(":")
+            if len(parts) != 3:
+                return 0
+            try:
+                hours, minutes, seconds = [int(part) for part in parts]
+            except Exception:
+                return 0
+            return max(0, hours * 3600 + minutes * 60 + seconds)
+
+        def _total_runtime_display(self, rows: List[dict]) -> str:
+            total = sum(self._duration_to_seconds(row.get("Running Time", "")) for row in rows)
+            return format_duration_hms(total)
+
         def _status_bucket(self, status: str) -> str:
             clean = (status or "").strip()
             if clean.startswith("Done"):
@@ -1770,6 +1784,7 @@ def run_qt_shell() -> int:
                     compatibility,
                     f"[Logs] File: {os.path.basename(path)}",
                     f"[Logs] Total tasks: {stats['Total']}",
+                    f"[Logs] Total render time: {self._total_runtime_display(rows)}",
                     f"[Logs] Done: {stats['Done']} | Failed: {stats['Failed']} | Cancelled: {stats['Cancelled']} | Skipped: {stats['Skipped']} | Incomplete: {stats['Incomplete']}",
                 ])
             )
@@ -2742,7 +2757,7 @@ def run_qt_shell() -> int:
                 validation = self._validation_for_index(task_index)
                 values = (
                     str(order) if order is not None else "",
-                    get_queue_log_status(state.get("status", "Ready"), task.enabled),
+                    get_status_display(state.get("status", "Ready"), task.enabled),
                     "",
                     soft_name(task.level), soft_name(task.sequence), soft_name(task.preset),
                     format_runtime_display(state), format_state_time_display(state.get("start")),
@@ -3675,7 +3690,7 @@ def run_qt_shell() -> int:
                 rows.append(
                     " / ".join([
                         str(order),
-                        get_status_display(state.get("status", "Ready"), task.enabled),
+                        get_queue_log_status(state.get("status", "Ready"), task.enabled),
                         soft_name(task.level),
                         soft_name(task.sequence),
                         soft_name(task.preset),
