@@ -19,7 +19,7 @@ from tkinter import ttk
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.10.21"
+APP_VERSION = "1.10.22"
 
 UI_THEME = {
     "bg": "#111318",
@@ -2164,29 +2164,10 @@ class MRQLauncher(tk.Tk):
         return sel[0]
 
     def _build_command_preview_for_task(self, task: RenderTask) -> str:
-        ue_cmd = self.var_ue.get().strip() or "<UnrealEditor-Cmd.exe>"
-        cmd = [
-            ue_cmd,
-            task.uproject or "<uproject>",
-            task.level.split(".")[0] if task.level else "<map>",
-            "-game",
-            f'-LevelSequence="{task.sequence or "<sequence>"}"',
-            f'-MoviePipelineConfig="{task.preset or "<preset>"}"',
-            "-log",
-        ]
-        if bool(self.var_windowed.get()):
-            cmd.append("-windowed")
-        else:
-            cmd.append("-fullscreen")
-        cmd += [f"-ResX={int(self.var_resx.get())}", f"-ResY={int(self.var_resy.get())}"]
-        if bool(self.var_nts.get()):
-            cmd.append("-notexturestreaming")
-        extra = (self.var_extra.get() or "").strip()
-        if extra:
-            cmd += shlex.split(extra)
-        if task.output_dir:
-            cmd.append(f'-OutputDirectory="{task.output_dir}"')
-        return " \\\n".join(cmd)
+        try:
+            return build_unreal_command_preview(self._current_render_settings_snapshot(), task)
+        except ValueError as exc:
+            return f"Command preview error: invalid Extra CLI.\n{exc}"
 
     def _status_tag_for_index(self, idx: int) -> str:
         if not (0 <= idx < len(self.settings.tasks)):
@@ -2275,10 +2256,41 @@ class MRQLauncher(tk.Tk):
         self.load_from_json(path, silent=True)
 
     def _on_runtime_options_changed(self, *_args):
-        self.settings.auto_minimal_on_render = bool(self.var_auto_minimal.get()) if hasattr(self, "var_auto_minimal") else self.settings.auto_minimal_on_render
+        self._sync_runtime_controls_to_settings()
         self._update_engine_labels()
         if self.command_preview is not None:
             self._update_command_preview()
+
+    def _current_render_settings_snapshot(self) -> AppSettings:
+        """Return a UI-independent render settings snapshot from current Tk controls."""
+        settings = AppSettings(
+            ue_cmd=self.var_ue.get().strip(),
+            retries=int(self.var_retries.get()),
+            fail_policy=self.var_policy.get(),
+            kill_timeout_s=int(self.var_kill_timeout.get()),
+            windowed=bool(self.var_windowed.get()),
+            resx=int(self.var_resx.get()),
+            resy=int(self.var_resy.get()),
+            no_texture_streaming=bool(self.var_nts.get()),
+            extra_cli=self.var_extra.get().strip(),
+            auto_minimal_on_render=bool(self.var_auto_minimal.get()),
+        )
+        settings.tasks = self.settings.tasks
+        return settings
+
+    def _sync_runtime_controls_to_settings(self) -> None:
+        """Mirror current Tk controls into AppSettings without changing task data."""
+        snapshot = self._current_render_settings_snapshot()
+        self.settings.ue_cmd = snapshot.ue_cmd
+        self.settings.retries = snapshot.retries
+        self.settings.fail_policy = snapshot.fail_policy
+        self.settings.kill_timeout_s = snapshot.kill_timeout_s
+        self.settings.windowed = snapshot.windowed
+        self.settings.resx = snapshot.resx
+        self.settings.resy = snapshot.resy
+        self.settings.no_texture_streaming = snapshot.no_texture_streaming
+        self.settings.extra_cli = snapshot.extra_cli
+        self.settings.auto_minimal_on_render = snapshot.auto_minimal_on_render
 
     def copy_command_preview(self):
         task = self._selected_task()
@@ -2881,18 +2893,8 @@ class MRQLauncher(tk.Tk):
 
     # Save/Load JSON (queue)
     def _current_persistence_config(self) -> dict:
-        return {
-            "ue_cmd": self.var_ue.get().strip(),
-            "retries": int(self.var_retries.get()),
-            "fail_policy": self.var_policy.get(),
-            "kill_timeout_s": int(self.var_kill_timeout.get()),
-            "windowed": bool(self.var_windowed.get()),
-            "resx": int(self.var_resx.get()),
-            "resy": int(self.var_resy.get()),
-            "no_texture_streaming": bool(self.var_nts.get()),
-            "auto_minimal_on_render": bool(self.var_auto_minimal.get()),
-            "extra_cli": self.var_extra.get().strip(),
-        }
+        self._sync_runtime_controls_to_settings()
+        return app_settings_to_queue_config(self.settings)
 
     def _apply_persistence_config(self, config: dict) -> None:
         self.var_ue.set(config["ue_cmd"])
@@ -3184,9 +3186,13 @@ class MRQLauncher(tk.Tk):
             self._log(f"[Logs] {e}")
 
     def _run_queue(self, tasks: List[RenderTask]):
-        ue_cmd = self.var_ue.get().strip()
-        self.settings.auto_minimal_on_render = bool(self.var_auto_minimal.get())
-        if not ue_cmd or not os.path.exists(ue_cmd):
+        try:
+            render_settings = self._current_render_settings_snapshot()
+        except ValueError as exc:
+            messagebox.showerror("Render", f"Invalid render settings: {exc}")
+            return
+        self._sync_runtime_controls_to_settings()
+        if not render_settings.ue_cmd or not os.path.exists(render_settings.ue_cmd):
             messagebox.showerror("Error", "Specify a valid path to UnrealEditor-Cmd.exe")
             return
         if not tasks and self.runtime_queue.empty():
@@ -3203,11 +3209,11 @@ class MRQLauncher(tk.Tk):
                 self._log("[Validation] No valid tasks to enqueue.")
                 messagebox.showinfo("Render", "No valid tasks to render. Check the Validate column and Job Inspector details.")
                 return
-        if self.settings.auto_minimal_on_render and not self.minimal_mode:
+        if render_settings.auto_minimal_on_render and not self.minimal_mode:
             self.after(0, self.enter_minimal_mode)
-        retries = int(self.var_retries.get())
-        policy = self.var_policy.get()
-        kill_timeout = int(self.var_kill_timeout.get())
+        retries = int(render_settings.retries)
+        policy = render_settings.fail_policy
+        kill_timeout = int(render_settings.kill_timeout_s)
 
         # (handled inside _enqueue_tasks)
 
@@ -3248,38 +3254,13 @@ class MRQLauncher(tk.Tk):
                 cancelled_current = False
                 while attempt <= retries and not self.stop_all:
                     attempt += 1
-                    # Build UE command with render options from UI
-                    cmd = [
-                        ue_cmd,
-                        t.uproject,
-                        t.level.split(".")[0],
-                        "-game",
-                        f"-LevelSequence=\"{t.sequence}\"",
-                        f"-MoviePipelineConfig=\"{t.preset}\"",
-                        "-log",
-                    ]
-                    # Windowed / Fullscreen and resolution
-                    if bool(self.var_windowed.get()):
-                        cmd.append("-windowed")
-                    else:
-                        cmd.append("-fullscreen")
                     try:
-                        rx = int(self.var_resx.get())
-                        ry = int(self.var_resy.get())
-                        cmd += [f"-ResX={rx}", f"-ResY={ry}"]
-                    except Exception:
-                        pass
-                    # No Texture Streaming
-                    if bool(self.var_nts.get()):
-                        cmd.append("-notexturestreaming")
-                    # Extra CLI (split respecting quotes)
-                    extra = (self.var_extra.get() or "").strip()
-                    if extra:
-                        cmd += shlex.split(extra)
-                    # Per-task output directory override:
-                    # If set, it will override the destination defined in the MRQ Preset.
-                    if t.output_dir:
-                        cmd.append(f'-OutputDirectory="{t.output_dir}"')
+                        cmd = build_unreal_command(render_settings, t)
+                    except ValueError as exc:
+                        self._log(f"[{idx}] Invalid Extra CLI: {exc}")
+                        if gi is not None:
+                            self._set_status_async(gi, "Failed (invalid Extra CLI)")
+                        break
                     self._log(f"[{idx}] Start (try {attempt}/{retries+1}): {' '.join(cmd)}")
 
                     start_dt = datetime.now()
@@ -3579,6 +3560,22 @@ class MRQLauncher(tk.Tk):
                 self._update_row_async(idx)
         self._log(f"[Status] Cleared status for {len(sel)} task(s).")
 
+
+
+def app_settings_to_queue_config(settings: AppSettings) -> dict:
+    """Return the persisted queue config subset from an AppSettings snapshot."""
+    return {
+        "ue_cmd": settings.ue_cmd,
+        "retries": int(settings.retries),
+        "fail_policy": settings.fail_policy,
+        "kill_timeout_s": int(settings.kill_timeout_s),
+        "windowed": bool(settings.windowed),
+        "resx": int(settings.resx),
+        "resy": int(settings.resy),
+        "no_texture_streaming": bool(settings.no_texture_streaming),
+        "auto_minimal_on_render": bool(settings.auto_minimal_on_render),
+        "extra_cli": settings.extra_cli,
+    }
 
 
 def build_unreal_command(settings: AppSettings, task: RenderTask) -> List[str]:
