@@ -1586,9 +1586,16 @@ def run_qt_shell() -> int:
             self.table.setColumnWidth(1, 120)
             right_layout.addWidget(self.table, 1)
 
+            summary_header = QHBoxLayout()
             summary_label = QLabel("Log Summary")
             summary_label.setObjectName("SectionTitle")
-            right_layout.addWidget(summary_label)
+            self.total_runtime_label = QLabel("Total render time: 00:00:00")
+            self.total_runtime_label.setObjectName("MutedLabel")
+            self.total_runtime_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            summary_header.addWidget(summary_label)
+            summary_header.addStretch(1)
+            summary_header.addWidget(self.total_runtime_label)
+            right_layout.addLayout(summary_header)
             self.summary_view = QTextEdit(self)
             self.summary_view.setReadOnly(True)
             self.summary_view.setMinimumHeight(120)
@@ -1647,6 +1654,8 @@ def run_qt_shell() -> int:
             self.log_meta.setText("No log selected")
             self.table.setRowCount(0)
             self.summary_view.setPlainText("")
+            if hasattr(self, "total_runtime_label"):
+                self.total_runtime_label.setText("Total render time: 00:00:00")
             for value in self.metric_labels.values():
                 value.setText("0")
 
@@ -1759,6 +1768,9 @@ def run_qt_shell() -> int:
                 created = "Unknown time"
             self.log_meta.setText(f"{created}  •  Sorted by Order")
             stats = self._stats_for_rows(rows)
+            total_runtime = self._total_runtime_display(rows)
+            if hasattr(self, "total_runtime_label"):
+                self.total_runtime_label.setText(f"Total render time: {total_runtime}")
             for key, value in stats.items():
                 if key in self.metric_labels:
                     self.metric_labels[key].setText(str(value))
@@ -1787,7 +1799,7 @@ def run_qt_shell() -> int:
                     compatibility,
                     f"[Logs] File: {os.path.basename(path)}",
                     f"[Logs] Total tasks: {stats['Total']}",
-                    f"[Logs] Total render time: {self._total_runtime_display(rows)}",
+                    f"[Logs] Total render time: {total_runtime}",
                     f"[Logs] Done: {stats['Done']} | Failed: {stats['Failed']} | Cancelled: {stats['Cancelled']} | Skipped: {stats['Skipped']} | Incomplete: {stats['Incomplete']}",
                 ])
             )
