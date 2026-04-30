@@ -3,7 +3,7 @@ setlocal enableextensions enabledelayedexpansion
 
 REM ===== Config =====
 set NAME=MRQLauncherQT
-set VER=1.10.24
+set VER=1.10.25
 set LOG=build_qt_log.txt
 
 REM Always build from the folder where this BAT is located.
