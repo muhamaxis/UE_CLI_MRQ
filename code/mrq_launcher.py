@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.10.27"
+APP_VERSION = "1.10.28"
 
 UI_THEME = {
     "bg": "#111318",
@@ -868,7 +868,7 @@ def run_qt_shell() -> int:
     """Launch the PySide6 queue workspace without replacing the Tkinter launcher."""
     try:
         from PySide6.QtCore import QEvent, Qt, QTimer, QSize
-        from PySide6.QtGui import QColor, QBrush, QIcon, QPalette, QFont, QPainter, QPen, QPixmap
+        from PySide6.QtGui import QColor, QBrush, QIcon, QPalette, QFont, QPainter, QPen, QPixmap, QIntValidator
         from PySide6.QtWidgets import (
             QApplication, QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
             QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPushButton,
@@ -1294,6 +1294,110 @@ def run_qt_shell() -> int:
             painter.restore()
 
 
+
+    class QtCommitNumberDialog(QDialog):
+        """Optional render-session commit/changelist prompt."""
+
+        def __init__(self, parent):
+            super().__init__(parent)
+            self.commit_cl = ""
+            self.setWindowTitle("Enter Commit Number")
+            icon_path = app_icon_path()
+            if os.path.exists(icon_path):
+                self.setWindowIcon(QIcon(icon_path))
+            self.setModal(True)
+            self.setMinimumWidth(620)
+
+            root = QVBoxLayout(self)
+            root.setContentsMargins(18, 18, 18, 18)
+            root.setSpacing(14)
+
+            warning = QFrame(self)
+            warning.setObjectName("ToolbarStrip")
+            warning.setStyleSheet("QFrame#ToolbarStrip { border-color: #E07B24; background-color: rgba(199, 106, 29, 32); }")
+            warning_layout = QHBoxLayout(warning)
+            warning_layout.setContentsMargins(14, 12, 14, 12)
+            icon = QLabel("⚠", warning)
+            icon.setStyleSheet("color: #FF9F0A; font-size: 28px; font-weight: 800; background: transparent; border: none;")
+            warning_layout.addWidget(icon)
+            warning_text = QVBoxLayout()
+            title = QLabel("Before starting the render", warning)
+            title.setStyleSheet("color: #FF9F0A; font-size: 14px; font-weight: 800; background: transparent; border: none;")
+            body = QLabel("Make sure you have pulled the latest project updates to avoid rendering outdated content.", warning)
+            body.setWordWrap(True)
+            body.setStyleSheet("color: #F5F7FA; background: transparent; border: none;")
+            warning_text.addWidget(title)
+            warning_text.addWidget(body)
+            warning_layout.addLayout(warning_text, 1)
+            root.addWidget(warning)
+
+            intro = QLabel("Commit Number (CL)", self)
+            intro.setObjectName("TitleLabel")
+            root.addWidget(intro)
+
+            description = QLabel(
+                "Enter the current commit number (CL) for this render.\n"
+                "Leave it empty and click Start Rendering to render without saving a commit number.",
+                self,
+            )
+            description.setWordWrap(True)
+            description.setObjectName("MutedLabel")
+            root.addWidget(description)
+
+            input_panel = QFrame(self)
+            input_panel.setObjectName("ToolbarStrip")
+            input_layout = QVBoxLayout(input_panel)
+            input_layout.setContentsMargins(14, 14, 14, 14)
+            input_layout.setSpacing(8)
+            label = QLabel("Commit (CL-xxxxx):", input_panel)
+            label.setStyleSheet("color: #A8C9FF; font-weight: 700; background: transparent; border: none;")
+            input_layout.addWidget(label)
+            row = QHBoxLayout()
+            prefix = QLabel("CL-", input_panel)
+            prefix.setAlignment(Qt.AlignCenter)
+            prefix.setMinimumWidth(58)
+            prefix.setMinimumHeight(34)
+            prefix.setStyleSheet("background-color: #0F1218; border: 1px solid #202838; border-radius: 8px; font-weight: 800;")
+            row.addWidget(prefix)
+            self.commit_edit = QLineEdit(input_panel)
+            self.commit_edit.setPlaceholderText("123456")
+            self.commit_edit.setValidator(QIntValidator(0, 999999999, self.commit_edit))
+            self.commit_edit.setMinimumHeight(34)
+            row.addWidget(self.commit_edit, 1)
+            input_layout.addLayout(row)
+            example = QLabel("Example: 123456", input_panel)
+            example.setObjectName("MutedLabel")
+            input_layout.addWidget(example)
+            root.addWidget(input_panel)
+
+            info = QLabel(
+                "If provided, the commit number will be saved in the queue log filename and shown in Queue Logs.",
+                self,
+            )
+            info.setWordWrap(True)
+            info.setObjectName("MutedLabel")
+            root.addWidget(info)
+
+            buttons = QHBoxLayout()
+            buttons.addStretch(1)
+            start_button = QPushButton("▶  Start Rendering", self)
+            start_button.setProperty("role", "warning")
+            start_button.setMinimumWidth(210)
+            start_button.setMinimumHeight(40)
+            start_button.clicked.connect(self._accept_start)
+            cancel_button = QPushButton("Cancel", self)
+            cancel_button.setMinimumWidth(130)
+            cancel_button.setMinimumHeight(40)
+            cancel_button.clicked.connect(self.reject)
+            buttons.addWidget(start_button)
+            buttons.addWidget(cancel_button)
+            root.addLayout(buttons)
+
+        def _accept_start(self) -> None:
+            value = self.commit_edit.text().strip()
+            self.commit_cl = f"CL-{value}" if value else ""
+            self.accept()
+
     class QtTaskEditor(QDialog):
         """Qt editor for one render task."""
 
@@ -1622,6 +1726,18 @@ def run_qt_shell() -> int:
             except Exception:
                 return "Unknown time"
 
+        def _commit_from_queue_log_path(self, path: str) -> str:
+            """Extract an optional CL marker from Queue_Log_CL-xxxxx_*.log filenames."""
+            name = os.path.basename(path)
+            prefix = "Queue_Log_"
+            if not name.startswith(prefix):
+                return ""
+            remainder = name[len(prefix):]
+            if not remainder.startswith("CL-"):
+                return ""
+            parts = remainder.split("_", 1)
+            return parts[0] if parts and parts[0].startswith("CL-") else ""
+
         def refresh_logs(self) -> None:
             query = self.search_edit.text().strip().lower() if self.search_edit else ""
             current = self.current_log_path
@@ -1635,9 +1751,11 @@ def run_qt_shell() -> int:
                 item = QListWidgetItem(os.path.basename(path))
                 item.setSizeHint(QSize(0, 72))
                 item.setData(Qt.UserRole, path)
+                commit_cl = self._commit_from_queue_log_path(path)
+                created = self._log_created_display(path)
                 item.setData(Qt.UserRole + 1, {
                     "filename": os.path.basename(path),
-                    "created": self._log_created_display(path),
+                    "created": f"{created}  •  {commit_cl}" if commit_cl else created,
                     "stats": stats,
                 })
                 self.log_list.addItem(item)
@@ -1766,7 +1884,12 @@ def run_qt_shell() -> int:
                 created = datetime.fromtimestamp(os.path.getmtime(path)).strftime("%Y-%m-%d %H:%M:%S")
             except Exception:
                 created = "Unknown time"
-            self.log_meta.setText(f"{created}  •  Sorted by Order")
+            commit_cl = self._commit_from_queue_log_path(path)
+            meta_parts = [created]
+            if commit_cl:
+                meta_parts.append(f"Commit: {commit_cl}")
+            meta_parts.append("Sorted by Order")
+            self.log_meta.setText("  •  ".join(meta_parts))
             stats = self._stats_for_rows(rows)
             total_runtime = self._total_runtime_display(rows)
             if hasattr(self, "total_runtime_label"):
@@ -1794,15 +1917,18 @@ def run_qt_shell() -> int:
                 compatibility = "[Logs] Legacy queue log format detected. Order and Status were reconstructed for display."
             else:
                 compatibility = "[Logs] Queue log format: Order / Status / Level / Sequence / Preset / Running Time / Start / End"
-            self.summary_view.setPlainText(
-                "\n".join([
-                    compatibility,
-                    f"[Logs] File: {os.path.basename(path)}",
-                    f"[Logs] Total tasks: {stats['Total']}",
-                    f"[Logs] Total render time: {total_runtime}",
-                    f"[Logs] Done: {stats['Done']} | Failed: {stats['Failed']} | Cancelled: {stats['Cancelled']} | Skipped: {stats['Skipped']} | Incomplete: {stats['Incomplete']}",
-                ])
-            )
+            summary_lines = [
+                compatibility,
+                f"[Logs] File: {os.path.basename(path)}",
+            ]
+            if commit_cl:
+                summary_lines.append(f"[Logs] Commit: {commit_cl}")
+            summary_lines.extend([
+                f"[Logs] Total tasks: {stats['Total']}",
+                f"[Logs] Total render time: {total_runtime}",
+                f"[Logs] Done: {stats['Done']} | Failed: {stats['Failed']} | Cancelled: {stats['Cancelled']} | Skipped: {stats['Skipped']} | Incomplete: {stats['Incomplete']}",
+            ])
+            self.summary_view.setPlainText("\n".join(summary_lines))
 
         def _selected_log_text(self) -> str:
             if not self.current_log_path:
@@ -1893,6 +2019,7 @@ def run_qt_shell() -> int:
             self.cancel_current_requested = False
             self._current_global_idx: Optional[int] = None
             self._session_started_at: Optional[float] = None
+            self.current_session_commit_cl = ""
             self.table = None
             self.filter_edit = None
             self.ue_path_edit = None
@@ -3509,12 +3636,27 @@ def run_qt_shell() -> int:
                 self._update_status_bar()
             return changed
 
+        def _prompt_render_commit_number(self) -> tuple[bool, str]:
+            """Ask for an optional render-session CL before a new worker starts."""
+            dialog = QtCommitNumberDialog(self)
+            if dialog.exec() != QDialog.Accepted:
+                return False, ""
+            return True, dialog.commit_cl
+
         def _run_queue(self, tasks: List[RenderTask]) -> None:
             if not self._validate_current_render_options():
                 return
             if not self.settings.ue_cmd or not os.path.exists(self.settings.ue_cmd):
                 QMessageBox.critical(self, "Render", "Specify a valid path to UnrealEditor-Cmd.exe.")
                 return
+            if not self.worker_running and not tasks and self.runtime_queue.empty():
+                QMessageBox.information(self, "Render", "No valid tasks to render. Check the Validate column and Job Inspector details.")
+                return
+            if not self.worker_running:
+                accepted, commit_cl = self._prompt_render_commit_number()
+                if not accepted:
+                    return
+                self.current_session_commit_cl = commit_cl
             if tasks:
                 self._enqueue_tasks(tasks)
             if self.worker_running:
@@ -3678,6 +3820,9 @@ def run_qt_shell() -> int:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             logs_dir = self._logs_dir()
             os.makedirs(logs_dir, exist_ok=True)
+            commit_cl = (self.current_session_commit_cl or "").strip()
+            if commit_cl:
+                return os.path.join(logs_dir, f"Queue_Log_{commit_cl}_{timestamp}.log")
             return os.path.join(logs_dir, f"Queue_Log_{timestamp}.log")
 
         def _format_hms(self, seconds: Optional[int]) -> str:
