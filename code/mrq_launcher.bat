@@ -6,5 +6,5 @@ set PYTHON_EXE=python
 REM Path to the script
 set SCRIPT_PATH=%~dp0mrq_launcher.py
 
-%PYTHON_EXE% "%SCRIPT_PATH%"
+%PYTHON_EXE% "%SCRIPT_PATH%" --qt
 pause
