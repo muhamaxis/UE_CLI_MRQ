@@ -1,215 +1,212 @@
-# MRQ Launcher (CLI)
+# MRQ-Launcher
 
-**MRQ Launcher (CLI)** is a lightweight **Qt desktop launcher** for running **Unreal Engine Movie Render Queue (MRQ)** jobs through `UnrealEditor-Cmd.exe`, without opening the full Unreal Editor UI.
+A lightweight Qt desktop launcher for running Unreal Engine Movie Render Queue jobs without opening the full Unreal Editor UI.
 
-It is designed as a **version-agnostic Unreal Engine render launcher**. The app is not tied to one specific UE installation. Select the `UnrealEditor-Cmd.exe` from the engine version you want to use, load or create MRQ jobs, and run them as a controlled render queue from a clean desktop interface.
+MRQ-Launcher is designed for production render workflows where opening the full Unreal Editor just to start MRQ jobs is unnecessary, slow, and resource-heavy. The launcher runs MRQ tasks through `UnrealEditor-Cmd.exe`, provides queue management, validation, compact monitoring, cancellation controls, and render logs.
 
-> Batch-render Unreal Engine Movie Render Queue jobs with a focused Qt UI, queue control, validation, Minimal Mode, and render logs.
-
----
-
-## Current status
-
-MRQ Launcher is now **Qt-only**.
-
-The previous Tkinter UI has been removed. The normal source launch, batch launch, and packaged EXE now open the Qt launcher directly.
-
-Current application version:
+## Current version
 
 ```text
-1.10.25
+1.10.28
 ```
 
----
-
-## Screenshots
-
-### Main Qt launcher
-
-![MRQ Launcher Qt Main Window](docs/images/mrq_launcher_qt_full.png)
-
-### Minimal Mode
-
-![MRQ Launcher Minimal Mode](docs/images/mrq_launcher_qt_minimal.png)
-
-### Queue Logs
-
-![MRQ Launcher Queue Logs](docs/images/mrq_launcher_qt_log.png)
-
----
-
-## What it does
-
-MRQ Launcher helps you manage and execute Unreal Engine MRQ render jobs from a standalone desktop tool.
-
-Core features:
-
-- Create and manage MRQ render jobs based on:
-  - `.uproject`
-  - Map / Level asset
-  - Level Sequence asset
-  - MRQ Preset asset
-  - optional output directory
-- Select any Unreal Engine version by pointing to its `UnrealEditor-Cmd.exe`.
-- Load, save, and reuse full render queues as JSON.
-- Import and export individual task files as `.task.json`.
-- Add, edit, duplicate, remove, enable, disable, and reorder jobs.
-- Validate project and asset paths before rendering.
-- Prevent invalid or incomplete jobs from entering the runtime queue.
-- Run selected, enabled, or all jobs through one controlled render queue.
-- Append jobs to the active queue while rendering is already in progress.
-- Prevent accidental parallel Unreal render processes from the launcher UI.
-- Stop only the current render while keeping the remaining queue alive.
-- Stop the whole queue when needed.
-- Preview the generated Unreal command line before rendering.
-- Save per-task logs and queue summary logs under `mrq_logs/`.
-- Inspect saved queue logs from the built-in Queue Logs window.
-- Use Minimal Mode as a compact monitoring view during long render sessions.
-
----
-
-## Why use it
-
-Unreal Engine MRQ can be automated from command line, but building and repeating those commands manually becomes painful when you have many shots, many maps, multiple engine versions, and overnight render queues.
-
-MRQ Launcher provides a small production-focused layer around that workflow.
-
-It is useful for:
-
-- cinematic rendering
-- batch MRQ jobs
-- overnight render queues
-- lighting artists
-- technical artists
-- virtual production / nDisplay-related render workflows
-- small teams that need repeatable render execution
-- projects that move between several Unreal Engine versions
-
----
-
-## Unreal Engine compatibility
-
-MRQ Launcher is intended to work with Unreal Engine versions that support command-line MRQ rendering through `UnrealEditor-Cmd.exe`.
-
-The launcher does not hardcode one engine version. You choose the executable path for the engine you want to render with.
-
-Example paths:
+The clean repository starts from the current Qt-only production baseline. The recommended first Git tag/release is:
 
 ```text
-C:/Program Files/Epic Games/UE_5.4/Engine/Binaries/Win64/UnrealEditor-Cmd.exe
-C:/Program Files/Epic Games/UE_5.5/Engine/Binaries/Win64/UnrealEditor-Cmd.exe
-C:/Program Files/Epic Games/UE_5.6/Engine/Binaries/Win64/UnrealEditor-Cmd.exe
-C:/Program Files/Epic Games/UE_5.7/Engine/Binaries/Win64/UnrealEditor-Cmd.exe
+v1.10.28
 ```
 
-Actual render behavior still depends on your Unreal project, selected engine build, MRQ preset, plugins, command-line support, and project configuration.
+This keeps the GitHub release version aligned with the internal `APP_VERSION` shown by the application.
 
----
+## Main features
+
+- Run Unreal Engine Movie Render Queue jobs from a Qt desktop UI.
+- Use any installed Unreal Engine version by selecting the required `UnrealEditor-Cmd.exe`.
+- Load and save render queue JSON files.
+- Load and save individual task JSON files.
+- Validate `.uproject`, map, level sequence, and MRQ preset paths before rendering.
+- Block invalid or incomplete tasks from entering the runtime queue.
+- Run jobs through one controlled runtime queue.
+- Prevent accidental parallel Unreal render processes.
+- Append new valid jobs while a render is already running.
+- Use Stop Current to cancel only the active render.
+- Use Stop All to cancel the active render and clear the pending queue.
+- Use Minimal Mode for compact render monitoring.
+- Save per-task logs and queue summary logs.
+- Review saved queue logs in the Queue Logs viewer.
 
 ## Requirements
 
-### Source version
-
-- Windows
-- Unreal Engine with `UnrealEditor-Cmd.exe`
-- Python 3.9+
+- Windows 10/11
+- Python 3.10 or newer
 - PySide6
+- PyInstaller, only for building the EXE
+- Unreal Engine installed locally
+- A valid path to `UnrealEditor-Cmd.exe`
 
-Install PySide6 if needed:
-
-```bat
-pip install PySide6
-```
-
-### Packaged EXE version
-
-The packaged EXE includes the Python/PySide runtime through PyInstaller. Unreal Engine is still required separately.
-
----
-
-## How to run from source
-
-From the repository root, run:
+Install Python dependencies:
 
 ```bat
-mrq_launcherQt.bat
+pip install -r requirements.txt
 ```
 
-Or run the Python entrypoint directly:
+Expected `requirements.txt`:
+
+```txt
+PySide6
+pyinstaller
+```
+
+## Repository structure
+
+```text
+MRQ-Launcher/
+├─ code/
+│  ├─ mrq_launcher.py
+│  └─ mrq_launcher.bat
+├─ docs/
+│  ├─ images/
+│  │  ├─ mrq_launcher_qt_full.png
+│  │  ├─ mrq_launcher_qt_log.png
+│  │  └─ mrq_launcher_qt_minimal.png
+│  ├─ BASELINE_BEHAVIOR.md
+│  └─ mrq_launcher_project_guardrails.md
+├─ resources/
+│  ├─ app_icon.ico
+│  └─ mrq_launcher_logo_167.png
+├─ tools/
+│  └─ build_exe.bat
+├─ README.md
+├─ requirements.txt
+├─ .gitignore
+└─ LICENSE
+```
+
+Generated folders are intentionally not part of the repository:
+
+```text
+.venv-build/
+build/
+dist/
+mrq_logs/
+```
+
+## Run from source
+
+From the repository root:
 
 ```bat
 python code\mrq_launcher.py
 ```
 
-Both launch the Qt UI.
+The app opens the Qt launcher directly.
 
----
+A convenience launcher may also exist at:
 
-## Quick start
+```text
+code\mrq_launcher.bat
+```
 
-1. Launch MRQ Launcher.
-2. Set the path to `UnrealEditor-Cmd.exe`.
-3. Add a render job:
-   - select your `.uproject`
-   - select the Map / Level asset
-   - select the Level Sequence asset
-   - select the MRQ Preset asset
-   - optionally set an output directory
+It should only launch `code\mrq_launcher.py`. It should not contain old Tk assumptions.
+
+## Build EXE
+
+The canonical build script is:
+
+```text
+tools\build_exe.bat
+```
+
+Run it from Explorer or from the command line:
+
+```bat
+tools\build_exe.bat
+```
+
+The builder resolves the repository root from its own path, so it can be launched from any current directory.
+
+The EXE application name is:
+
+```text
+MRQLauncherCLI
+```
+
+Expected outputs:
+
+```text
+dist\MRQLauncherCLI\MRQLauncherCLI.exe
+dist\MRQLauncherCLI.exe
+```
+
+Temporary build files are written to:
+
+```text
+build\pyinstaller\
+build\spec\
+build\build_exe_log.txt
+.venv-build\
+```
+
+Required resources included in the build:
+
+```text
+resources\app_icon.ico
+resources\mrq_launcher_logo_167.png
+```
+
+## Basic workflow
+
+1. Launch MRQ-Launcher.
+2. Select or verify the path to `UnrealEditor-Cmd.exe`.
+3. Load a queue JSON file or add tasks manually.
 4. Validate the queue.
-5. Enable the jobs you want to render.
-6. Check the render order.
-7. Click **Render Enabled**, **Render Selected**, or **Render All**.
-8. Use **Minimal Mode** during rendering if you want a compact monitoring window.
-9. Inspect per-task logs or queue logs when the render finishes.
+5. Enable and order the jobs that should render.
+6. Start Render Selected, Render Enabled, Render All, or Queue Selected.
+7. Monitor execution in Full Mode or Minimal Mode.
+8. Use Stop Current to cancel only the active render.
+9. Use Stop All to cancel the active render and clear the pending queue.
+10. Review per-task logs and queue summary logs after completion.
 
----
+## Queue and task compatibility
 
-## Queue behavior
+MRQ-Launcher preserves the existing queue/task JSON model.
 
-The launcher uses one controlled runtime queue.
+Persistent task fields:
 
-Important behavior:
+- `uproject`
+- `level`
+- `sequence`
+- `preset`
+- `output_dir`
+- `notes`
+- `added_at`
+- `enabled`
 
-- Only one Unreal render process should run from the launcher at a time.
-- **Render Selected** uses selected jobs.
-- **Render Enabled** uses enabled jobs.
-- **Render All** uses all jobs.
-- **Queue Selected** uses selected jobs, or enabled jobs when nothing is selected.
-- If rendering is already active, new jobs are appended to the existing queue.
-- A second Unreal render process is not started by queue actions.
-- Duplicate pending/running job objects are skipped.
-- Disabled jobs are hidden in Minimal Mode.
-- Invalid and incomplete jobs are blocked before queue entry.
+Required render fields:
 
----
+- `uproject`
+- `level`
+- `sequence`
+- `preset`
 
-## Render controls
+Runtime state is not written into task JSON.
 
-Available render controls include:
+Validation results are not written into task JSON.
 
-- **Render Selected**
-- **Render Enabled**
-- **Render All**
-- **Queue Selected**
-- **Stop Current**
-- **Stop All**
-- **Minimal Mode**
+Session order is runtime/UI state. It must not be persisted into queue JSON unless a dedicated migration is explicitly requested.
 
-### Stop Current
+User workflow settings, such as recent queues and auto-load-last-queue, are stored separately from queue JSON.
 
-Stops only the currently running Unreal render process. The rest of the pending queue continues unless **Stop All** was requested.
+## Validation behavior
 
-### Stop All
+Validation checks that required local files are available:
 
-Stops the current render and clears the remaining pending queue.
+- `.uproject` file exists.
+- Map asset resolves to a local `.umap` candidate.
+- Level Sequence resolves to a local `.uasset` candidate.
+- MRQ preset resolves to a local `.uasset` candidate.
 
----
-
-## Validation
-
-Validation checks whether the required project and asset paths are usable before rendering.
-
-Validation statuses include:
+Validation statuses:
 
 - `Ready`
 - `Invalid`
@@ -222,85 +219,45 @@ Blocking statuses:
 - `Invalid`
 - `Incomplete`
 
-`Unknown` is treated as a warning by default. This can happen when the launcher cannot confidently resolve an asset path locally, for example with unsupported mount points.
+`Unknown` warns but does not block by default.
 
-Validation does not modify task paths automatically. The exception is explicit user action such as **Fix Project Path**.
+## Render queue behavior
 
----
+MRQ-Launcher is built around one active Unreal render process.
 
-## Saving and loading
+Render actions use the shared runtime queue:
 
-### Queue JSON
+- Render Selected
+- Render Enabled
+- Render All
+- Queue Selected
 
-Use queue JSON files to save and restore a full render setup.
+When a render is already active, new valid jobs are appended to the existing runtime queue instead of launching another Unreal process.
 
-A saved queue includes:
+Duplicate queued or currently rendering task objects are skipped.
 
-- render settings
-- runtime options
-- task list
+Invalid or incomplete tasks are skipped and logged.
 
-Common actions:
+## Cancellation behavior
 
-- **Load Queue**
-- **Save Queue**
-- **Recent Queues**
-- **Auto Load Last Queue**
+Stop Current:
 
-Recent queues are stored in the user settings file, not inside the queue JSON.
+- stops only the currently running Unreal process;
+- marks the active task as cancelled;
+- allows the remaining queue to continue.
 
-### Task JSON
+Stop All:
 
-Individual task files use the `.task.json` extension.
-
-You can:
-
-- save selected jobs as task files
-- load one or more task files into the current queue
-
-Existing queue and task JSON files remain backward compatible.
-
----
-
-## Logs
-
-Logs are written under:
-
-```text
-mrq_logs/
-```
-
-The launcher writes two main kinds of logs.
-
-### Per-task logs
-
-Each rendered task writes a separate log containing:
-
-- generated command line
-- start time
-- Unreal output stream
-- end time
-- exit code
-
-### Queue summary logs
-
-When a queue completes, the launcher auto-saves a queue summary log.
-
-Queue summary logs use a compact execution snapshot:
-
-```text
-Order / Status / Level / Sequence / Preset / Running Time / Start / End
-```
-
-The **Queue Logs** window can list and display saved `Queue_Log_*.log` files.
-
----
+- stops the current Unreal process;
+- clears pending queue entries;
+- marks pending queued tasks as cancelled;
+- prevents the remaining queue from continuing.
 
 ## Minimal Mode
 
-Minimal Mode is a compact execution view for monitoring active render jobs.
+Minimal Mode is a compact execution view intended for render monitoring.
 
-It shows only the most important queue information:
+It shows:
 
 - Status
 - Validate
@@ -308,147 +265,112 @@ It shows only the most important queue information:
 - Sequence
 - Preset
 - Running Time
-
-Minimal Mode keeps the render controls available:
-
+- current task/status/session information
 - Stop Current
 - Stop All
 - Exit Minimal Mode
 
-Disabled jobs are hidden in Minimal Mode so the view stays focused on the active render set.
+Disabled tasks are hidden in Minimal Mode.
 
----
+## Logs
 
-## Command Preview
-
-The launcher shows the generated Unreal command for the selected or currently running task.
-
-The command is built from:
-
-- `UnrealEditor-Cmd.exe`
-- `.uproject`
-- map path
-- level sequence
-- MRQ preset
-- `-game`
-- `-log`
-- window/fullscreen option
-- resolution
-- texture streaming option
-- extra CLI arguments
-- optional output directory override
-
-Command Preview and the actual render command use the same shared command construction logic.
-
----
-
-## Building the Windows EXE
-
-The repository includes:
-
-```bat
-buildQt_exe.bat
-```
-
-The build script creates or reuses a local `.venv`, installs build dependencies, and uses PyInstaller to build the Qt launcher.
-
-### Build requirements
-
-- Windows
-- Python 3.9+ available from `python` in Command Prompt
-- Internet access for the first build so `pip` can install dependencies
-- Project resources:
-  - `resources/app_icon.ico`
-  - `resources/mrq_launcher_logo_167.png`
-
-### How to build
-
-From the repository root, run:
-
-```bat
-buildQt_exe.bat
-```
-
-### Build outputs
-
-Successful builds are written to:
+Per-task logs are saved under:
 
 ```text
-dist/MRQLauncherQT/MRQLauncherQT.exe
-dist/MRQLauncherQT.exe
+mrq_logs\
 ```
 
-The OneDir build is usually the safest option to distribute together with its generated folder:
+Queue summary logs are also saved under:
 
 ```text
-dist/MRQLauncherQT/MRQLauncherQT.exe
+mrq_logs\
 ```
 
-The OneFile build is easier to copy, but startup can be slower because PyInstaller extracts bundled files at launch:
+Queue summary logs use the compact execution snapshot format:
 
 ```text
-dist/MRQLauncherQT.exe
+Order / Status / Level / Sequence / Preset / Running Time / Start / End
 ```
 
-### Build troubleshooting
-
-If the build fails, check:
-
-```text
-build_qt_log.txt
-```
-
-The batch file prints the last build log lines automatically. When reporting a build problem, include `build_qt_log.txt`.
-
----
-
-## Repository layout
-
-Important project paths:
-
-```text
-code/mrq_launcher.py
-mrq_launcherQt.bat
-buildQt_exe.bat
-resources/app_icon.ico
-resources/mrq_launcher_logo_167.png
-docs/images/mrq_launcher_qt_full.png
-docs/images/mrq_launcher_qt_minimal.png
-docs/images/mrq_launcher_qt_log.png
-mrq_logs/
-```
-
----
+Queue logs are auto-saved after queue completion. Manual save remains available.
 
 ## Documentation
 
-Project documentation files:
+The clean repository keeps development contracts in `docs/`.
 
-```text
-README.md
+Important docs:
+
+- `docs/BASELINE_BEHAVIOR.md` captures the current production behavior.
+- `docs/mrq_launcher_project_guardrails.md` defines protected rules and areas that should not be casually changed.
+
+Use these documents before implementation tasks, refactors, packaging changes, and Codex handoffs.
+
+## Git ignore policy
+
+The repository should not commit generated files or local runtime data.
+
+Important ignored paths:
+
+```gitignore
+.venv-build/
+build/
+dist/
+*.spec
+mrq_logs/
+*.log
+user_settings.json
+*.local.json
 ```
 
-These documents define the task format, protected runtime behavior, baseline behavior, and the completed Qt migration audit.
+`tools/` is not ignored. Build scripts should be committed.
 
----
+## Release flow
 
-## Design principles
+Recommended clean-repo first release:
 
-MRQ Launcher is intentionally focused.
+```bat
+git tag v1.10.28
+git push origin v1.10.28
+```
 
-Core rules:
+Future releases should follow the internal app version where practical:
 
-- keep one active Unreal render process
-- keep queue execution predictable
-- preserve JSON compatibility
-- keep validation blocking strict
-- keep render command construction transparent
-- keep logs easy to inspect
-- avoid unnecessary dependencies
-- keep the UI production-focused rather than overloaded
+```text
+v1.10.29
+v1.10.30
+v1.11.0
+v2.0.0
+```
 
----
+Bump `APP_VERSION` whenever a behavior-changing patch is made.
+
+Version bump is expected for:
+
+- runtime behavior changes;
+- queue behavior changes;
+- validation changes;
+- UI workflow changes;
+- logging format changes;
+- persistence behavior changes;
+- packaging/build behavior changes.
+
+Pure documentation changes do not require an app version bump.
+
+## Development rules
+
+- Keep UI text in English.
+- Keep code comments in English.
+- Preserve queue JSON compatibility.
+- Preserve task JSON compatibility.
+- Do not persist runtime state into task JSON.
+- Do not persist validation results into task JSON.
+- Do not persist session order into queue JSON unless explicitly requested.
+- Do not add dependencies unless explicitly approved.
+- Do not allow parallel Unreal render processes from launcher actions.
+- Do not bypass validation, duplicate protection, runtime queue, or process guard logic.
+- Do not change Unreal command construction semantics without a dedicated task.
+- Do not reintroduce the legacy Tk UI.
 
 ## License
 
-MIT. Free to use, modify, and share.
+See `LICENSE`.
