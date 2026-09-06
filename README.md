@@ -7,13 +7,13 @@ MRQ-Launcher is designed for production render workflows where opening the full 
 ## Current version
 
 ```text
-1.10.28
+1.10.29
 ```
 
 The clean repository starts from the current Qt-only production baseline. The recommended first Git tag/release is:
 
 ```text
-v1.10.28
+v1.10.29
 ```
 
 This keeps the GitHub release version aligned with the internal `APP_VERSION` shown by the application.
@@ -232,9 +232,13 @@ Render actions use the shared runtime queue:
 - Render All
 - Queue Selected
 
+The `Order` column is the launch contract for every render action. `Move Up` and `Move Down` update the pending runtime queue atomically; the active task continues unchanged.
+
 When a render is already active, new valid jobs are appended to the existing runtime queue instead of launching another Unreal process.
 
 Duplicate queued or currently rendering task objects are skipped.
+
+Loading a different queue, changing project paths, editing the active or pending task, and removing the active task are blocked with an explanatory message until that work is no longer active. Adding, loading, duplicating, moving, or removing non-active jobs remains safe because runtime events follow stable in-memory task identity rather than table row numbers.
 
 Invalid or incomplete tasks are skipped and logged.
 
@@ -329,8 +333,8 @@ user_settings.json
 Recommended clean-repo first release:
 
 ```bat
-git tag v1.10.28
-git push origin v1.10.28
+git tag v1.10.29
+git push origin v1.10.29
 ```
 
 Future releases should follow the internal app version where practical:

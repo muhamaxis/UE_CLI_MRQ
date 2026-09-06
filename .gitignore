@@ -9,6 +9,8 @@ user_settings.json
 *.local.json
 .vscode/
 .idea/
+__pycache__/
+*.py[cod]
 desktop.ini
 /resources/src
 releases/MRQLauncherCLI.zip

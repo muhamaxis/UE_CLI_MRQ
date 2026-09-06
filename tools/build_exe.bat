@@ -8,7 +8,7 @@ REM Output EXE name: MRQLauncherCLI
 REM =================================================
 
 set "APP_NAME=MRQLauncherCLI"
-set "APP_VERSION=1.10.28"
+set "APP_VERSION=1.10.29"
 
 REM Resolve repository layout from this BAT location.
 set "SCRIPT_DIR=%~dp0"

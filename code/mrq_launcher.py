@@ -6,6 +6,7 @@ import threading
 import time
 import sys
 import shlex
+from collections import deque
 from dataclasses import dataclass, asdict, field
 from typing import List, Optional, Any
 from datetime import datetime, timedelta
@@ -14,7 +15,7 @@ from datetime import datetime, timedelta
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.10.28"
+APP_VERSION = "1.10.29"
 
 UI_THEME = {
     "bg": "#111318",
@@ -316,6 +317,8 @@ class TaskRuntimeEvent:
     start: Optional[float] = None
     end: Optional[float] = None
     payload: Any = None
+    task: Optional["RenderTask"] = None
+    session_id: Optional[int] = None
 
 
 def default_task_state() -> dict:
@@ -447,6 +450,50 @@ class RenderTask:
     notes: str = ""
     added_at: str = field(default_factory=current_task_timestamp)
     enabled: bool = True
+
+
+def find_task_index_by_identity(tasks: List[RenderTask], task: Optional[RenderTask]) -> Optional[int]:
+    """Resolve a runtime task without relying on a mutable table index."""
+    if task is None:
+        return None
+    for index, existing in enumerate(tasks):
+        if existing is task:
+            return index
+    return None
+
+
+def apply_task_runtime_event(
+    tasks: List[RenderTask],
+    states: List[dict],
+    event: TaskRuntimeEvent,
+    current_session_id: Optional[int] = None,
+) -> bool:
+    """Apply a runtime event to the same task object that produced it."""
+    if event.session_id is not None and current_session_id is not None and event.session_id != current_session_id:
+        return False
+    idx = find_task_index_by_identity(tasks, event.task)
+    if idx is None and event.task is None:
+        idx = event.task_index
+    if idx is None or not (0 <= idx < len(states)):
+        return False
+    if event.start is not None:
+        states[idx]["start"] = event.start
+    if event.end is not None:
+        states[idx]["end"] = event.end
+    if event.status is not None:
+        states[idx]["status"] = event.status
+        if event.status.startswith(TaskRuntimeStatus.DONE):
+            states[idx]["progress"] = 100
+        elif event.status in (
+            TaskRuntimeStatus.QUEUED,
+            TaskRuntimeStatus.READY,
+            TaskRuntimeStatus.CANCELLED,
+            TaskRuntimeStatus.CANCELLED_QUEUE,
+        ):
+            states[idx]["progress"] = 0
+    if event.progress is not None:
+        states[idx]["progress"] = event.progress
+    return True
 
 
 @dataclass
@@ -663,66 +710,100 @@ class PersistenceRepository:
 
 
 class RuntimeQueueCoordinator:
-    """Owns pending render queue operations independently from Tk widgets."""
+    """Own pending/active render work behind one atomic lock."""
 
-    def __init__(self, task_index_resolver, current_task_getter, status_callback, log_callback):
-        self._pending: "queue.Queue[RenderTask]" = queue.Queue()
+    def __init__(self, task_index_resolver, status_callback, log_callback):
+        self._pending = deque()
+        self._active_task: Optional[RenderTask] = None
+        self._condition = threading.Condition(threading.RLock())
         self._task_index_resolver = task_index_resolver
-        self._current_task_getter = current_task_getter
         self._status_callback = status_callback
         self._log_callback = log_callback
 
     def empty(self) -> bool:
-        return self._pending.empty()
+        with self._condition:
+            return not self._pending
+
+    def has_work(self) -> bool:
+        with self._condition:
+            return self._active_task is not None or bool(self._pending)
+
+    def active_task(self) -> Optional[RenderTask]:
+        with self._condition:
+            return self._active_task
+
+    def pending_tasks(self) -> List[RenderTask]:
+        with self._condition:
+            return list(self._pending)
+
+    def contains_pending(self, task: RenderTask) -> bool:
+        with self._condition:
+            return any(existing is task for existing in self._pending)
+
+    def is_active(self, task: RenderTask) -> bool:
+        with self._condition:
+            return self._active_task is task
+
+    def is_active_or_pending(self, task: RenderTask) -> bool:
+        with self._condition:
+            return self._active_task is task or any(existing is task for existing in self._pending)
 
     def get(self, timeout: Optional[float] = None) -> RenderTask:
-        if timeout is None:
-            return self._pending.get()
-        return self._pending.get(timeout=timeout)
+        with self._condition:
+            if self._active_task is not None:
+                raise RuntimeError("Cannot dequeue while another render task is active.")
+            if timeout is None:
+                while not self._pending:
+                    self._condition.wait()
+            elif not self._pending and not self._condition.wait_for(lambda: bool(self._pending), timeout):
+                raise queue.Empty
+            task = self._pending.popleft()
+            self._active_task = task
+            return task
+
+    def complete(self, task: RenderTask) -> None:
+        with self._condition:
+            if self._active_task is task:
+                self._active_task = None
+            self._condition.notify_all()
 
     def task_identity_set(self) -> set:
-        queued_ids = set()
-        running_task = self._current_task_getter()
-        if running_task is not None:
-            queued_ids.add(id(running_task))
-
-        kept = []
-        while True:
-            try:
-                task = self._pending.get_nowait()
-            except queue.Empty:
-                break
-            kept.append(task)
-            queued_ids.add(id(task))
-
-        for task in kept:
-            self._pending.put(task)
-        return queued_ids
+        with self._condition:
+            queued_ids = {id(task) for task in self._pending}
+            if self._active_task is not None:
+                queued_ids.add(id(self._active_task))
+            return queued_ids
 
     def enqueue_tasks(self, tasks: List[RenderTask], mark_queued: bool = True, log_prefix: str = "[+] Added ") -> bool:
         if not tasks:
             return False
 
-        queued_ids = self.task_identity_set()
         count = 0
         skipped_duplicates = 0
         skipped_incomplete = 0
+        added_tasks = []
 
-        for task in tasks:
-            if not all([task.uproject, task.level, task.sequence, task.preset]):
-                skipped_incomplete += 1
-                continue
-            if id(task) in queued_ids:
-                skipped_duplicates += 1
-                continue
+        with self._condition:
+            queued_ids = {id(task) for task in self._pending}
+            if self._active_task is not None:
+                queued_ids.add(id(self._active_task))
+            for task in tasks:
+                if not all([task.uproject, task.level, task.sequence, task.preset]):
+                    skipped_incomplete += 1
+                    continue
+                if id(task) in queued_ids:
+                    skipped_duplicates += 1
+                    continue
 
-            self._pending.put(task)
-            queued_ids.add(id(task))
-            if mark_queued:
-                task_index = self._task_index_resolver(task)
-                if task_index is not None:
-                    self._status_callback(task_index, "Queued")
-            count += 1
+                self._pending.append(task)
+                queued_ids.add(id(task))
+                added_tasks.append(task)
+                count += 1
+            if added_tasks:
+                if mark_queued:
+                    for task in added_tasks:
+                        self._status_callback(task, TaskRuntimeStatus.QUEUED)
+                self._condition.notify_all()
 
         if count:
             self._log_callback(f"{log_prefix}{count} task(s) to queue")
@@ -734,44 +815,75 @@ class RuntimeQueueCoordinator:
         return bool(count or skipped_duplicates or skipped_incomplete)
 
     def clear_pending(self, status_text: str = TaskRuntimeStatus.CANCELLED_QUEUE) -> int:
-        removed = 0
-        while True:
-            try:
-                task = self._pending.get_nowait()
-            except queue.Empty:
-                break
+        with self._condition:
+            removed_tasks = list(self._pending)
+            self._pending.clear()
+            self._condition.notify_all()
+        for task in removed_tasks:
             task_index = self._task_index_resolver(task)
             if task_index is not None:
-                self._status_callback(task_index, status_text)
-            removed += 1
+                self._status_callback(task, status_text)
 
+        removed = len(removed_tasks)
         if removed:
             self._log_callback(f"[Cancel] Removed {removed} queued task(s).")
         return removed
 
-    def remove_tasks(self, tasks_to_remove: List[RenderTask]) -> int:
+    def remove_tasks(self, tasks_to_remove: List[RenderTask], reject_active: bool = False) -> int:
         if not tasks_to_remove:
             return 0
 
         to_remove_ids = {id(task) for task in tasks_to_remove}
-        kept = []
-        removed = 0
-        while True:
-            try:
-                task = self._pending.get_nowait()
-            except queue.Empty:
-                break
-            if id(task) in to_remove_ids:
-                removed += 1
-                continue
-            kept.append(task)
-
-        for task in kept:
-            self._pending.put(task)
+        with self._condition:
+            if reject_active and self._active_task is not None and id(self._active_task) in to_remove_ids:
+                return -1
+            original_count = len(self._pending)
+            self._pending = deque(task for task in self._pending if id(task) not in to_remove_ids)
+            removed = original_count - len(self._pending)
+            self._condition.notify_all()
 
         if removed:
             self._log_callback(f"[Tasks] Removed {removed} queued item(s) from runtime queue.")
         return removed
+
+    def reorder_pending(self, ordered_tasks: List[RenderTask]) -> None:
+        """Reorder only pending work; the active task is never interrupted."""
+        positions = {id(task): index for index, task in enumerate(ordered_tasks)}
+        with self._condition:
+            original_positions = {id(task): index for index, task in enumerate(self._pending)}
+            self._pending = deque(sorted(
+                self._pending,
+                key=lambda task: (positions.get(id(task), 10**9), original_positions[id(task)]),
+            ))
+
+
+class RuntimeWorkerGate:
+    """Reserve the single queue worker before its thread is started."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._running = False
+
+    @property
+    def running(self) -> bool:
+        with self._lock:
+            return self._running
+
+    def try_reserve(self, has_pending: bool) -> bool:
+        with self._lock:
+            if self._running or not has_pending:
+                return False
+            self._running = True
+            return True
+
+    def release_and_reserve_restart(self, has_pending: bool, stopped: bool) -> bool:
+        """Release the worker and atomically reserve a replacement when work arrived at completion."""
+        with self._lock:
+            self._running = False
+            if has_pending and not stopped:
+                self._running = True
+                return True
+            return False
 
 
 class RenderProcessController:
@@ -2009,15 +2121,14 @@ def run_qt_shell() -> int:
             self.process_controller = RenderProcessController(self._append_log)
             self.runtime_queue = RuntimeQueueCoordinator(
                 self._find_task_index_by_identity,
-                self._current_running_task_for_queue,
                 self._set_status_from_core,
                 self._append_log,
             )
-            self.worker_running = False
+            self.worker_gate = RuntimeWorkerGate()
             self.queue_order_by_task_id: dict[int, int] = {}
             self.stop_all = False
             self.cancel_current_requested = False
-            self._current_global_idx: Optional[int] = None
+            self._runtime_session_id = 0
             self._session_started_at: Optional[float] = None
             self.current_session_commit_cl = ""
             self.table = None
@@ -2830,12 +2941,12 @@ def run_qt_shell() -> int:
             return [idx for _order, idx in sorted(ordered)]
 
         def _sort_tasks_by_session_order(self, tasks: List[RenderTask]) -> List[RenderTask]:
-            positions = {id(task): pos for pos, task in enumerate(tasks)}
+            list_positions = {id(task): pos for pos, task in enumerate(self.settings.tasks)}
             return sorted(
                 tasks,
                 key=lambda task: (
                     self.queue_order_by_task_id.get(id(task), 10**9),
-                    positions.get(id(task), 10**9),
+                    list_positions.get(id(task), 10**9),
                 ),
             )
 
@@ -2850,9 +2961,8 @@ def run_qt_shell() -> int:
             """Create session-only queue order from enabled tasks in list order."""
             self.queue_order_by_task_id.clear()
             order = 1
-            for idx, task in enumerate(self.settings.tasks):
-                state = self.state[idx] if idx < len(self.state) else default_task_state()
-                if not task.enabled or state.get("status", "Ready").startswith(TaskRuntimeStatus.RENDERING):
+            for task in self.settings.tasks:
+                if not task.enabled:
                     continue
                 self.queue_order_by_task_id[id(task)] = order
                 order += 1
@@ -2967,24 +3077,27 @@ def run_qt_shell() -> int:
             if only_enabled:
                 tasks = [task for task in self.settings.tasks if task.enabled]
                 return self._sort_tasks_by_session_order(tasks)
-            return list(self.settings.tasks)
+            return self._sort_tasks_by_session_order(list(self.settings.tasks))
 
         def _find_task_index_by_identity(self, task: RenderTask) -> Optional[int]:
-            for i, existing in enumerate(self.settings.tasks):
-                if existing is task:
-                    return i
-            return None
+            return find_task_index_by_identity(self.settings.tasks, task)
 
         def _current_running_task_for_queue(self) -> Optional[RenderTask]:
-            if self._current_global_idx is not None and 0 <= self._current_global_idx < len(self.settings.tasks):
-                return self.settings.tasks[self._current_global_idx]
-            return None
+            return self.runtime_queue.active_task()
 
-        def _set_status_from_core(self, idx: int, text: str) -> None:
+        def _current_running_task_index(self) -> Optional[int]:
+            return self._find_task_index_by_identity(self._current_running_task_for_queue())
+
+        @property
+        def worker_running(self) -> bool:
+            return self.worker_gate.running
+
+        def _set_status_from_core(self, task: RenderTask, text: str) -> None:
             self.ui_events.put(TaskRuntimeEvent(
                 event_type=self._event_type_for_status(text),
-                task_index=idx,
                 status=text,
+                task=task,
+                session_id=self._runtime_session_id,
             ))
 
         def _append_log(self, message: str) -> None:
@@ -3005,22 +3118,12 @@ def run_qt_shell() -> int:
             return "task_status_changed"
 
         def _apply_runtime_event(self, event: TaskRuntimeEvent) -> bool:
-            idx = event.task_index
-            if idx is None or not (0 <= idx < len(self.state)):
-                return False
-            if event.start is not None:
-                self.state[idx]["start"] = event.start
-            if event.end is not None:
-                self.state[idx]["end"] = event.end
-            if event.status is not None:
-                self.state[idx]["status"] = event.status
-                if event.status.startswith(TaskRuntimeStatus.DONE):
-                    self.state[idx]["progress"] = 100
-                elif event.status in (TaskRuntimeStatus.QUEUED, TaskRuntimeStatus.READY, TaskRuntimeStatus.CANCELLED, TaskRuntimeStatus.CANCELLED_QUEUE):
-                    self.state[idx]["progress"] = 0
-            if event.progress is not None:
-                self.state[idx]["progress"] = event.progress
-            return True
+            return apply_task_runtime_event(
+                self.settings.tasks,
+                self.state,
+                event,
+                current_session_id=self._runtime_session_id,
+            )
 
         def _drain_runtime_events(self) -> None:
             changed = False
@@ -3035,7 +3138,10 @@ def run_qt_shell() -> int:
                 while True:
                     event = self.ui_events.get_nowait()
                     changed = self._apply_runtime_event(event) or changed
-                    if event.event_type == TaskRuntimeEventType.QUEUE_COMPLETED:
+                    if (
+                        event.event_type == TaskRuntimeEventType.QUEUE_COMPLETED
+                        and (event.session_id is None or event.session_id == self._runtime_session_id)
+                    ):
                         self.save_queue_log(auto=True)
             except queue.Empty:
                 pass
@@ -3133,6 +3239,8 @@ def run_qt_shell() -> int:
             return True
 
         def fix_project_path_for_queue(self) -> None:
+            if not self._guard_queue_replacement("changing project paths"):
+                return
             if not self.settings.tasks:
                 QMessageBox.information(self, "Fix Project Path", "Load a queue first.")
                 return
@@ -3198,8 +3306,8 @@ def run_qt_shell() -> int:
                 return
             self._sync_option_controls_to_settings()
             task = self._selected_task()
-            if task is None and self._current_global_idx is not None and 0 <= self._current_global_idx < len(self.settings.tasks):
-                task = self.settings.tasks[self._current_global_idx]
+            if task is None:
+                task = self._current_running_task_for_queue()
             self.command_preview.setPlainText(
                 self._build_command_preview_for_task(task)
                 if task else "Select a task to inspect the generated command line."
@@ -3213,7 +3321,9 @@ def run_qt_shell() -> int:
             enabled = sum(1 for task in self.settings.tasks if task.enabled)
             ordered = len(self._ordered_task_indices())
             self.statusBar().showMessage(f"Tasks: {len(self.settings.tasks)} | Enabled: {enabled} | Ordered: {ordered} | Queued: {queued} | Running: {running} | Done: {done} | Failed: {failed}")
-            current_idx = self._current_global_idx if self._current_global_idx is not None else (self.selected_indices()[0] if self.selected_indices() else None)
+            current_idx = self._current_running_task_index()
+            if current_idx is None:
+                current_idx = self.selected_indices()[0] if self.selected_indices() else None
             if current_idx is not None and 0 <= current_idx < len(self.settings.tasks):
                 task = self.settings.tasks[current_idx]
                 state = self.state[current_idx]
@@ -3241,8 +3351,9 @@ def run_qt_shell() -> int:
                 end = state.get("end")
                 if start and end:
                     total += max(0, int(end - start))
-            if self._current_global_idx is not None and 0 <= self._current_global_idx < len(self.state):
-                state = self.state[self._current_global_idx]
+            current_idx = self._current_running_task_index()
+            if current_idx is not None and 0 <= current_idx < len(self.state):
+                state = self.state[current_idx]
                 if state.get("start") and self.process_controller.is_active():
                     total += max(0, int(time.time() - state["start"]))
             h, rem = divmod(total, 3600)
@@ -3297,6 +3408,20 @@ def run_qt_shell() -> int:
             self._save_user_settings()
             self._append_log("[Recent] Recent queue list cleared.")
 
+        def _queue_is_busy(self) -> bool:
+            return self.worker_running or self.process_controller.is_active() or self.runtime_queue.has_work()
+
+        def _guard_queue_replacement(self, action: str, silent: bool = False) -> bool:
+            """Keep active runtime identities valid while replacing task data."""
+            if not self._queue_is_busy():
+                return True
+            message = f"Stop the active render before {action}."
+            if silent:
+                self._append_log(f"[Queue] {message}")
+            else:
+                QMessageBox.information(self, "Render Queue Active", message)
+            return False
+
         def _auto_load_last_queue_if_enabled(self) -> None:
             if not bool(self.user_settings.get("auto_load_last_queue", False)):
                 return
@@ -3305,6 +3430,8 @@ def run_qt_shell() -> int:
                 self.load_queue_path(path, silent=True)
 
         def load_queue_path(self, path: str, silent: bool = False) -> bool:
+            if not self._guard_queue_replacement("loading another queue", silent=silent):
+                return False
             if not os.path.isfile(path):
                 msg = f"Queue file not found: {path}"
                 if silent:
@@ -3441,7 +3568,10 @@ def run_qt_shell() -> int:
             if not indices:
                 return
             removed_tasks = [self.settings.tasks[idx] for idx in indices]
-            self.runtime_queue.remove_tasks(removed_tasks)
+            removed_count = self.runtime_queue.remove_tasks(removed_tasks, reject_active=True)
+            if removed_count < 0:
+                QMessageBox.information(self, "Render Queue Active", "Stop the current render before removing its task.")
+                return
             for task in removed_tasks:
                 self.queue_order_by_task_id.pop(id(task), None)
             for idx in sorted(indices, reverse=True):
@@ -3462,6 +3592,8 @@ def run_qt_shell() -> int:
             self.settings.tasks[idx], self.settings.tasks[new_idx] = self.settings.tasks[new_idx], self.settings.tasks[idx]
             self.state[idx], self.state[new_idx] = self.state[new_idx], self.state[idx]
             self.validation_results[idx], self.validation_results[new_idx] = self.validation_results[new_idx], self.validation_results[idx]
+            self._rebuild_order_for_enabled_tasks()
+            self.runtime_queue.reorder_pending(self._collect())
             self.refresh_queue_view()
             self._select_task_index(new_idx)
 
@@ -3499,10 +3631,12 @@ def run_qt_shell() -> int:
 
             for idx in unique_indices:
                 state = self.state[idx] if idx < len(self.state) else default_task_state()
+                task = self.settings.tasks[idx]
                 if state.get("status", "Ready").startswith(TaskRuntimeStatus.RENDERING):
                     continue
+                if self.runtime_queue.is_active(task):
+                    continue
 
-                task = self.settings.tasks[idx]
                 task_id = id(task)
                 has_order = task_id in self.queue_order_by_task_id
                 is_active = bool(task.enabled) or has_order
@@ -3542,9 +3676,11 @@ def run_qt_shell() -> int:
 
             self._ensure_state()
             toggleable_indices = []
-            for idx, _task in enumerate(self.settings.tasks):
+            for idx, task in enumerate(self.settings.tasks):
                 state = self.state[idx] if idx < len(self.state) else default_task_state()
                 if state.get("status", "Ready").startswith(TaskRuntimeStatus.RENDERING):
+                    continue
+                if self.runtime_queue.is_active(task):
                     continue
                 toggleable_indices.append(idx)
 
@@ -3616,7 +3752,8 @@ def run_qt_shell() -> int:
             if not (self.worker_running or self.process_controller.is_active()):
                 QMessageBox.information(self, "Append Selected", "Start a render first, then append selected tasks to the active queue.")
                 return
-            self._enqueue_tasks(tasks)
+            if self._enqueue_tasks(tasks):
+                self._start_worker_if_needed()
 
         def queue_selected_or_enabled(self) -> None:
             tasks = self._collect(only_selected=True)
@@ -3652,24 +3789,87 @@ def run_qt_shell() -> int:
             if not self.worker_running and not tasks and self.runtime_queue.empty():
                 QMessageBox.information(self, "Render", "No valid tasks to render. Check the Validate column and Job Inspector details.")
                 return
-            if not self.worker_running:
+            starts_new_session = not self.worker_running
+            if starts_new_session:
+                # Commit any final events from the previous session before its
+                # identifier changes and stale-event protection takes effect.
+                self._drain_runtime_events()
                 accepted, commit_cl = self._prompt_render_commit_number()
                 if not accepted:
                     return
                 self.current_session_commit_cl = commit_cl
+                self._runtime_session_id += 1
+                self.stop_all = False
+                self.cancel_current_requested = False
             if tasks:
                 self._enqueue_tasks(tasks)
-            if self.worker_running:
-                return
             if self.runtime_queue.empty():
-                QMessageBox.information(self, "Render", "No valid tasks to render. Check the Validate column and Job Inspector details.")
+                if starts_new_session:
+                    QMessageBox.information(self, "Render", "No valid tasks to render. Check the Validate column and Job Inspector details.")
                 return
-            self.stop_all = False
-            self.cancel_current_requested = False
+            self._start_worker_if_needed()
+
+        def _start_worker_if_needed(self) -> bool:
+            """Atomically reserve the worker before creating its thread."""
+            if not self.worker_gate.try_reserve(not self.runtime_queue.empty()):
+                return False
             threading.Thread(target=self._worker_loop, daemon=True).start()
+            return True
+
+        def _put_runtime_event(
+            self,
+            event_type: str,
+            task: Optional[RenderTask] = None,
+            session_id: Optional[int] = None,
+            status: Optional[str] = None,
+            progress: Optional[int] = None,
+            start: Optional[float] = None,
+            end: Optional[float] = None,
+        ) -> None:
+            self.ui_events.put(TaskRuntimeEvent(
+                event_type=event_type,
+                status=status,
+                progress=progress,
+                start=start,
+                end=end,
+                task=task,
+                session_id=self._runtime_session_id if session_id is None else session_id,
+            ))
 
         def _worker_loop(self) -> None:
-            self.worker_running = True
+            session_id = self._runtime_session_id
+            try:
+                self._worker_loop_body(session_id)
+            except Exception as exc:
+                self._append_log(f"[Qt] Queue worker failed unexpectedly: {exc}")
+                active_task = self.runtime_queue.active_task()
+                if self.process_controller.is_active():
+                    self.process_controller.stop_current(int(self.settings.kill_timeout_s))
+                if active_task is not None:
+                    self._put_runtime_event(
+                        TaskRuntimeEventType.TASK_FAILED,
+                        active_task,
+                        session_id,
+                        status="Failed (worker error)",
+                        progress=0,
+                        end=time.time(),
+                    )
+                    self.runtime_queue.complete(active_task)
+            finally:
+                if self.stop_all:
+                    self.runtime_queue.clear_pending(TaskRuntimeStatus.CANCELLED_QUEUE)
+                restart = self.worker_gate.release_and_reserve_restart(
+                    has_pending=not self.runtime_queue.empty(),
+                    stopped=self.stop_all,
+                )
+                if restart:
+                    self._append_log("[Qt] Work arrived at queue completion; continuing with one worker.")
+                    threading.Thread(target=self._worker_loop, daemon=True).start()
+                else:
+                    self._put_runtime_event(TaskRuntimeEventType.QUEUE_COMPLETED, session_id=session_id)
+                    self._append_log("[Qt] Queue complete.")
+
+        def _worker_loop_body(self, session_id: int) -> None:
             retries = int(self.settings.retries)
             policy = self.settings.fail_policy
             skip_next_pending = 0
@@ -3686,17 +3886,22 @@ def run_qt_shell() -> int:
                     continue
                 local_counter += 1
                 if self.stop_all:
+                    self._set_status_from_core(task, TaskRuntimeStatus.CANCELLED_QUEUE)
+                    self.runtime_queue.complete(task)
                     break
                 task_index = self._find_task_index_by_identity(task)
                 if task_index is None:
+                    self.runtime_queue.complete(task)
                     continue
                 if skip_next_pending > 0:
                     skip_next_pending -= 1
-                    self._set_status_from_core(task_index, TaskRuntimeStatus.SKIPPED_POLICY)
+                    self._set_status_from_core(task, TaskRuntimeStatus.SKIPPED_POLICY)
                     self._append_log(f"[Qt] [{local_counter}] Skipped by fail policy.")
+                    self.runtime_queue.complete(task)
                     continue
                 if not all([task.uproject, task.level, task.sequence, task.preset]):
                     self._append_log(f"[Qt] [{local_counter}] Skipped incomplete task.")
+                    self.runtime_queue.complete(task)
                     continue
 
                 attempt = 0
@@ -3705,15 +3910,28 @@ def run_qt_shell() -> int:
                     try:
                         cmd = self._build_command_for_task(task)
                     except ValueError as exc:
-                        self.ui_events.put(TaskRuntimeEvent(TaskRuntimeEventType.TASK_FAILED, task_index, "Failed (invalid Extra CLI)", 0, end=time.time()))
+                        self._put_runtime_event(
+                            TaskRuntimeEventType.TASK_FAILED,
+                            task,
+                            session_id,
+                            status="Failed (invalid Extra CLI)",
+                            progress=0,
+                            end=time.time(),
+                        )
                         self._append_log(f"[Qt] [{local_counter}] Invalid Extra CLI: {exc}")
                         break
                     start_time = time.time()
                     start_dt = datetime.now()
                     logfile = self._task_logfile(task)
                     log_fp = None
-                    self._current_global_idx = task_index
-                    self.ui_events.put(TaskRuntimeEvent(TaskRuntimeEventType.TASK_STARTED, task_index, "Rendering 00:00:00", 0, start_time))
+                    self._put_runtime_event(
+                        TaskRuntimeEventType.TASK_STARTED,
+                        task,
+                        session_id,
+                        status="Rendering 00:00:00",
+                        progress=0,
+                        start=start_time,
+                    )
                     self._append_log(f"[Qt] [{local_counter}] Start try {attempt}/{retries + 1}: {' '.join(cmd)}")
                     try:
                         log_fp = open(logfile, "a", encoding="utf-8")
@@ -3728,9 +3946,17 @@ def run_qt_shell() -> int:
                             except Exception:
                                 pass
                         self._append_log(f"[Qt] [{local_counter}] Failed to start: {exc}")
+                        self._put_runtime_event(
+                            TaskRuntimeEventType.TASK_FAILED,
+                            task,
+                            session_id,
+                            status="Failed to start",
+                            progress=0,
+                            end=time.time(),
+                        )
                         break
 
-                    def pump_stdout(proc: subprocess.Popen, idx: int, fp) -> None:
+                    def pump_stdout(proc: subprocess.Popen, runtime_task: RenderTask, fp) -> None:
                         try:
                             if proc.stdout:
                                 for line in proc.stdout:
@@ -3742,7 +3968,12 @@ def run_qt_shell() -> int:
                                         fp.write(clean_line + "\n")
                                     progress = self._extract_progress(clean_line)
                                     if progress is not None:
-                                        self.ui_events.put(TaskRuntimeEvent(TaskRuntimeEventType.PROGRESS_UPDATED, idx, progress=progress))
+                                        self._put_runtime_event(
+                                            TaskRuntimeEventType.PROGRESS_UPDATED,
+                                            runtime_task,
+                                            session_id,
+                                            progress=progress,
+                                        )
                         except Exception as exc:
                             self._append_log(f"[Qt pump] {exc}")
                         finally:
@@ -3752,13 +3983,18 @@ def run_qt_shell() -> int:
                                 except Exception:
                                     pass
 
-                    pump_thread = threading.Thread(target=pump_stdout, args=(process, task_index, log_fp), daemon=True)
+                    pump_thread = threading.Thread(target=pump_stdout, args=(process, task, log_fp), daemon=True)
                     pump_thread.start()
                     while process.poll() is None and not self.stop_all:
                         elapsed = int(time.time() - start_time)
                         h, rem = divmod(elapsed, 3600)
                         m, s = divmod(rem, 60)
-                        self.ui_events.put(TaskRuntimeEvent(TaskRuntimeEventType.TASK_STARTED, task_index, f"Rendering {h:02d}:{m:02d}:{s:02d}"))
+                        self._put_runtime_event(
+                            TaskRuntimeEventType.TASK_STARTED,
+                            task,
+                            session_id,
+                            status=f"Rendering {h:02d}:{m:02d}:{s:02d}",
+                        )
                         time.sleep(1.0)
                     rc = process.wait()
                     self.process_controller.clear_if_current(process)
@@ -3775,36 +4011,57 @@ def run_qt_shell() -> int:
                             log_fp.close()
                         except Exception:
                             pass
-                    self.ui_events.put(TaskRuntimeEvent(TaskRuntimeEventType.PROGRESS_UPDATED, task_index, end=end_time))
+                    self._put_runtime_event(TaskRuntimeEventType.PROGRESS_UPDATED, task, session_id, end=end_time)
                     self._append_log(f"[Qt] [{local_counter}] Exit code: {rc}")
 
                     if self.cancel_current_requested:
                         self.cancel_current_requested = False
-                        self.ui_events.put(TaskRuntimeEvent(TaskRuntimeEventType.TASK_CANCELLED, task_index, TaskRuntimeStatus.CANCELLED, 0, end=end_time))
+                        self._put_runtime_event(
+                            TaskRuntimeEventType.TASK_CANCELLED,
+                            task,
+                            session_id,
+                            status=TaskRuntimeStatus.CANCELLED,
+                            progress=0,
+                            end=end_time,
+                        )
                         break
                     if rc == 0:
                         duration = format_duration_hms(end_time - start_time)
-                        self.ui_events.put(TaskRuntimeEvent(TaskRuntimeEventType.TASK_FINISHED, task_index, f"Done ({duration})", 100, end=end_time))
+                        self._put_runtime_event(
+                            TaskRuntimeEventType.TASK_FINISHED,
+                            task,
+                            session_id,
+                            status=f"Done ({duration})",
+                            progress=100,
+                            end=end_time,
+                        )
                         break
                     if policy == "stop_queue":
-                        self.ui_events.put(TaskRuntimeEvent(TaskRuntimeEventType.TASK_FAILED, task_index, f"Failed (rc={rc})", end=end_time))
+                        self._put_runtime_event(
+                            TaskRuntimeEventType.TASK_FAILED,
+                            task,
+                            session_id,
+                            status=f"Failed (rc={rc})",
+                            end=end_time,
+                        )
                         self.stop_all = True
                         break
                     if attempt <= retries:
                         self._append_log(f"[Qt] [{local_counter}] Will retry.")
                     else:
-                        self.ui_events.put(TaskRuntimeEvent(TaskRuntimeEventType.TASK_FAILED, task_index, f"Failed (rc={rc})", end=end_time))
+                        self._put_runtime_event(
+                            TaskRuntimeEventType.TASK_FAILED,
+                            task,
+                            session_id,
+                            status=f"Failed (rc={rc})",
+                            end=end_time,
+                        )
                         if policy == "skip_next":
                             skip_next_pending = 1
                         break
+                self.runtime_queue.complete(task)
                 if self.stop_all:
                     break
-            if self.stop_all:
-                self.runtime_queue.clear_pending(TaskRuntimeStatus.CANCELLED_QUEUE)
-            self._current_global_idx = None
-            self.worker_running = False
-            self.ui_events.put(TaskRuntimeEvent(TaskRuntimeEventType.QUEUE_COMPLETED))
-            self._append_log("[Qt] Queue complete.")
 
         def _logs_dir(self) -> str:
             return os.path.join(os.getcwd(), "mrq_logs")
@@ -3983,6 +4240,9 @@ def run_qt_shell() -> int:
             if not (0 <= idx < len(self.settings.tasks)):
                 return
             old_task = self.settings.tasks[idx]
+            if self.runtime_queue.is_active_or_pending(old_task):
+                QMessageBox.information(self, "Render Queue Active", "Stop or remove this task from the runtime queue before editing it.")
+                return
             dialog = QtTaskEditor(self, old_task)
             if dialog.exec() != QDialog.Accepted or dialog.result is None:
                 return
