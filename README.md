@@ -7,13 +7,13 @@ MRQ-Launcher is designed for production render workflows where opening the full 
 ## Current version
 
 ```text
-1.10.29
+1.10.30
 ```
 
 The clean repository starts from the current Qt-only production baseline. The recommended first Git tag/release is:
 
 ```text
-v1.10.29
+v1.10.30
 ```
 
 This keeps the GitHub release version aligned with the internal `APP_VERSION` shown by the application.
@@ -270,6 +270,7 @@ It shows:
 - Preset
 - Running Time
 - current task/status/session information
+- persistent session-log save status and Retry Save/Queue Logs actions
 - Stop Current
 - Stop All
 - Exit Minimal Mode
@@ -278,25 +279,27 @@ Disabled tasks are hidden in Minimal Mode.
 
 ## Logs
 
-Per-task logs are saved under:
+For source runs, per-task logs and queue summaries are saved under:
 
 ```text
-mrq_logs\
+<repository>\mrq_logs\
 ```
 
-Queue summary logs are also saved under:
+For OneFile and OneDir builds, they are saved beside the running EXE, independent of the shortcut `Start in` directory:
 
 ```text
-mrq_logs\
+<EXE directory>\mrq_logs\
 ```
+
+If that portable location is read-only, the launcher falls back to `%APPDATA%\MRQLauncher\mrq_logs` and shows the full active path in the session-log status tooltip and Queue Logs viewer. The viewer also scans the legacy `<working directory>\mrq_logs` location so older queue logs remain readable.
 
 Queue summary logs use the compact execution snapshot format:
 
 ```text
-Order / Status / Level / Sequence / Preset / Running Time / Start / End
+Order / Status / Level / Sequence / Preset / Running Time / Start / End / Session / Task ID / Attempts / Exit Code / Task Log / Error / Attempt Details
 ```
 
-Queue logs are auto-saved after queue completion. Manual save remains available.
+Each render session has an immutable task snapshot and unique session/task/attempt IDs. Queue logs are atomically checkpointed after every confirmed terminal task state and finalized before the worker becomes idle. Short sessions and manual retries reuse their own unique session file without overwriting another session. Per-attempt logs drain stdout through EOF before their footer is written. Manual save and an explicit Retry Save action remain available; save failures stay visible outside the collapsed live console.
 
 ## Documentation
 
@@ -333,8 +336,8 @@ user_settings.json
 Recommended clean-repo first release:
 
 ```bat
-git tag v1.10.29
-git push origin v1.10.29
+git tag v1.10.30
+git push origin v1.10.30
 ```
 
 Future releases should follow the internal app version where practical:

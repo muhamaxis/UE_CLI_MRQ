@@ -6,6 +6,7 @@ import threading
 import time
 import sys
 import shlex
+import uuid
 from collections import deque
 from dataclasses import dataclass, asdict, field
 from typing import List, Optional, Any
@@ -15,7 +16,7 @@ from datetime import datetime, timedelta
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.10.29"
+APP_VERSION = "1.10.30"
 
 UI_THEME = {
     "bg": "#111318",
@@ -81,6 +82,42 @@ def user_settings_path() -> str:
     else:
         folder = os.path.join(os.path.expanduser("~"), ".config", "MRQLauncher")
     return os.path.join(folder, "user_settings.json")
+
+
+def application_root() -> str:
+    """Return the stable data root for source and portable frozen builds."""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
+
+def preferred_logs_dir() -> str:
+    """Keep portable build logs beside the EXE and source logs in the repo root."""
+    return os.path.join(application_root(), "mrq_logs")
+
+
+def fallback_logs_dir() -> str:
+    """Return the per-user fallback used when the portable location is read-only."""
+    return os.path.join(os.path.dirname(user_settings_path()), "mrq_logs")
+
+
+def atomic_write_text(path: str, text: str) -> None:
+    """Durably replace a text file without exposing a partially-written summary."""
+    directory = os.path.dirname(os.path.abspath(path))
+    os.makedirs(directory, exist_ok=True)
+    temporary = os.path.join(directory, f".{os.path.basename(path)}.{uuid.uuid4().hex}.tmp")
+    try:
+        with open(temporary, "x", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        try:
+            if os.path.exists(temporary):
+                os.remove(temporary)
+        except Exception:
+            pass
 
 
 def detect_default_unreal_cmd() -> str:
@@ -304,6 +341,8 @@ class TaskRuntimeEventType:
     TASK_CANCELLED = "task_cancelled"
     QUEUE_CLEARED = "queue_cleared"
     QUEUE_COMPLETED = "queue_completed"
+    SESSION_LOG_SAVED = "session_log_saved"
+    SESSION_LOG_SAVE_FAILED = "session_log_save_failed"
 
 
 @dataclass
@@ -450,6 +489,289 @@ class RenderTask:
     notes: str = ""
     added_at: str = field(default_factory=current_task_timestamp)
     enabled: bool = True
+
+
+class SessionLogError(Exception):
+    """Raised when a render session cannot be persisted in any configured location."""
+
+
+class RenderSessionJournal:
+    """Thread-safe, session-scoped render history with atomic checkpoints."""
+
+    TERMINAL_PREFIXES = (
+        TaskRuntimeStatus.DONE,
+        TaskRuntimeStatus.FAILED,
+        TaskRuntimeStatus.CANCELLED,
+        TaskRuntimeStatus.SKIPPED_POLICY,
+    )
+
+    def __init__(
+        self,
+        session_id: int,
+        tasks: List[RenderTask],
+        commit_cl: str = "",
+        primary_dir: Optional[str] = None,
+        fallback_dir: Optional[str] = None,
+        started_at: Optional[float] = None,
+    ):
+        self.session_id = int(session_id)
+        self.commit_cl = (commit_cl or "").strip()
+        self.started_at = float(started_at if started_at is not None else time.time())
+        stamp = datetime.fromtimestamp(self.started_at).strftime("%Y%m%d_%H%M%S_%f")
+        self.session_uid = f"S{self.session_id:04d}_{stamp}_{uuid.uuid4().hex[:8]}"
+        commit_part = f"{self.commit_cl}_" if self.commit_cl else ""
+        self.summary_filename = f"Queue_Log_{commit_part}{self.session_uid}.log"
+        self.primary_dir = os.path.abspath(primary_dir or preferred_logs_dir())
+        self.fallback_dir = os.path.abspath(fallback_dir or fallback_logs_dir())
+        self.write_dir: Optional[str] = None
+        self.summary_path: Optional[str] = None
+        self.last_error = ""
+        self.last_saved_at: Optional[float] = None
+        self.finalized = False
+        self._tasks: List[dict] = []
+        self._task_by_object_id: dict[int, dict] = {}
+        self._lock = threading.RLock()
+        self._save_lock = threading.Lock()
+        self.include_tasks(tasks)
+
+    @property
+    def using_fallback(self) -> bool:
+        return bool(self.write_dir and os.path.normcase(self.write_dir) == os.path.normcase(self.fallback_dir))
+
+    def include_tasks(self, tasks: List[RenderTask]) -> None:
+        """Add actual runtime work while preserving task values at enqueue time."""
+        with self._lock:
+            for task in tasks:
+                object_id = id(task)
+                if object_id in self._task_by_object_id:
+                    continue
+                position = len(self._tasks) + 1
+                record = {
+                    "object_id": object_id,
+                    "task_id": f"{self.session_uid}-T{position:04d}",
+                    "order": position,
+                    "uproject": str(task.uproject),
+                    "level": str(task.level),
+                    "sequence": str(task.sequence),
+                    "preset": str(task.preset),
+                    "enabled": bool(task.enabled),
+                    "status": TaskRuntimeStatus.QUEUED,
+                    "progress": 0,
+                    "start": None,
+                    "end": None,
+                    "attempts": [],
+                }
+                self._tasks.append(record)
+                self._task_by_object_id[object_id] = record
+
+    def record_event(self, event: TaskRuntimeEvent) -> bool:
+        """Record a runtime event and report whether it reached a terminal state."""
+        if event.session_id is not None and int(event.session_id) != self.session_id:
+            return False
+        if event.task is None:
+            return False
+        self.include_tasks([event.task])
+        with self._lock:
+            record = self._task_by_object_id[id(event.task)]
+            if event.start is not None and record["start"] is None:
+                record["start"] = event.start
+            if event.end is not None:
+                record["end"] = event.end
+            if event.status is not None:
+                record["status"] = event.status
+            if event.progress is not None:
+                record["progress"] = event.progress
+            return bool(event.status and event.status.startswith(self.TERMINAL_PREFIXES))
+
+    def begin_attempt(self, task: RenderTask, attempt: int, started_at: float, log_path: str = "", io_error: str = "") -> str:
+        self.include_tasks([task])
+        with self._lock:
+            record = self._task_by_object_id[id(task)]
+            attempt_id = f"{record['task_id']}-A{int(attempt):03d}"
+            record["attempts"].append({
+                "attempt_id": attempt_id,
+                "started_at": started_at,
+                "ended_at": None,
+                "status": "Running",
+                "exit_code": None,
+                "log_path": log_path,
+                "error": "",
+                "io_error": io_error,
+            })
+            return attempt_id
+
+    def note_attempt_io_error(self, task: RenderTask, attempt: int, message: str) -> None:
+        with self._lock:
+            entry = self._attempt(task, attempt)
+            current = str(entry.get("io_error", "") or "")
+            entry["io_error"] = f"{current}; {message}" if current else str(message)
+
+    def finish_attempt(
+        self,
+        task: RenderTask,
+        attempt: int,
+        ended_at: float,
+        status: str,
+        exit_code: Optional[int] = None,
+        error: str = "",
+    ) -> None:
+        with self._lock:
+            entry = self._attempt(task, attempt)
+            entry["ended_at"] = ended_at
+            entry["status"] = status
+            entry["exit_code"] = exit_code
+            entry["error"] = str(error or "")
+
+    def fail_open_attempt(self, task: RenderTask, ended_at: float, error: str) -> None:
+        """Close an in-flight attempt when the worker exits through an exception."""
+        with self._lock:
+            record = self._task_by_object_id.get(id(task))
+            if not record or not record["attempts"]:
+                return
+            entry = record["attempts"][-1]
+            if entry.get("ended_at") is not None:
+                return
+            entry["ended_at"] = ended_at
+            entry["status"] = "Failed (worker error)"
+            entry["error"] = str(error)
+
+    def task_log_path(self, task: RenderTask, attempt: int) -> str:
+        self.include_tasks([task])
+        directory = self._resolve_write_dir()
+        with self._lock:
+            record = self._task_by_object_id[id(task)]
+            base = f"{soft_name(task.level)}__{soft_name(task.sequence)}__{soft_name(task.preset)}"
+            return os.path.join(directory, f"Task_Log_{record['task_id']}_A{int(attempt):03d}_{base}.log")
+
+    def checkpoint(self, final: bool = False) -> str:
+        """Atomically write the latest confirmed state; repeated calls reuse one path."""
+        with self._save_lock:
+            text = self._serialize()
+            failures = []
+            candidates = self._candidate_dirs(prefer_selected=True)
+            for directory in candidates:
+                path = os.path.join(directory, self.summary_filename)
+                try:
+                    atomic_write_text(path, text)
+                except Exception as exc:
+                    failures.append(f"{path}: {exc}")
+                    continue
+                with self._lock:
+                    self.write_dir = directory
+                    self.summary_path = path
+                    self.last_error = ""
+                    self.last_saved_at = time.time()
+                    self.finalized = self.finalized or bool(final)
+                return path
+            message = "Unable to save the render session. " + " | ".join(failures)
+            with self._lock:
+                self.last_error = message
+            raise SessionLogError(message)
+
+    def rows(self) -> List[dict]:
+        """Return a detached test/UI snapshot without leaking mutable task state."""
+        with self._lock:
+            result = []
+            for item in self._tasks:
+                detached = {key: value for key, value in item.items() if key != "attempts"}
+                detached["attempts"] = [dict(attempt) for attempt in item["attempts"]]
+                result.append(detached)
+            return result
+
+    def _attempt(self, task: RenderTask, attempt: int) -> dict:
+        record = self._task_by_object_id.get(id(task))
+        if record is None:
+            raise KeyError("Task is not part of this render session.")
+        index = int(attempt) - 1
+        if index < 0 or index >= len(record["attempts"]):
+            raise KeyError(f"Attempt {attempt} is not registered for the task.")
+        return record["attempts"][index]
+
+    def _candidate_dirs(self, prefer_selected: bool = False) -> List[str]:
+        candidates = []
+        if prefer_selected and self.write_dir:
+            candidates.append(self.write_dir)
+        candidates.extend([self.primary_dir, self.fallback_dir])
+        unique = []
+        seen = set()
+        for path in candidates:
+            key = os.path.normcase(os.path.abspath(path))
+            if key not in seen:
+                seen.add(key)
+                unique.append(os.path.abspath(path))
+        return unique
+
+    def _resolve_write_dir(self) -> str:
+        if self.write_dir:
+            return self.write_dir
+        failures = []
+        for directory in self._candidate_dirs():
+            probe = os.path.join(directory, f".mrq_write_probe_{uuid.uuid4().hex}.tmp")
+            try:
+                atomic_write_text(probe, "MRQ Launcher write probe\n")
+                os.remove(probe)
+            except Exception as exc:
+                failures.append(f"{directory}: {exc}")
+                continue
+            self.write_dir = directory
+            return directory
+        raise SessionLogError("No writable log directory. " + " | ".join(failures))
+
+    def _serialize(self) -> str:
+        headers = [
+            "Order", "Status", "Level", "Sequence", "Preset", "Running Time", "Start", "End",
+            "Session", "Task ID", "Attempts", "Exit Code", "Task Log", "Error", "Attempt Details",
+        ]
+        lines = [" / ".join(headers)]
+        for record in self.rows():
+            attempts = record["attempts"]
+            last_attempt = attempts[-1] if attempts else {}
+            start = record.get("start")
+            end = record.get("end")
+            completed_attempt_seconds = sum(
+                max(0.0, float(entry["ended_at"]) - float(entry["started_at"]))
+                for entry in attempts
+                if entry.get("started_at") is not None and entry.get("ended_at") is not None
+            )
+            if attempts and completed_attempt_seconds:
+                duration = format_duration_hms(completed_attempt_seconds)
+            else:
+                duration = format_duration_hms(end - start) if start and end else ""
+            errors = [str(last_attempt.get(key, "") or "") for key in ("error", "io_error")]
+            attempt_details = [{
+                "id": entry.get("attempt_id", ""),
+                "status": entry.get("status", ""),
+                "exit_code": entry.get("exit_code"),
+                "start": entry.get("started_at"),
+                "end": entry.get("ended_at"),
+                "log": entry.get("log_path", ""),
+                "error": "; ".join(
+                    str(entry.get(key, "") or "") for key in ("error", "io_error") if entry.get(key)
+                ),
+            } for entry in attempts]
+            values = [
+                record["order"],
+                record.get("status", TaskRuntimeStatus.READY),
+                soft_name(record.get("level", "")),
+                soft_name(record.get("sequence", "")),
+                soft_name(record.get("preset", "")),
+                duration,
+                format_state_time_display(start),
+                format_state_time_display(end),
+                self.session_uid,
+                record["task_id"],
+                len(attempts),
+                "" if last_attempt.get("exit_code") is None else last_attempt.get("exit_code"),
+                last_attempt.get("log_path", ""),
+                "; ".join(value for value in errors if value),
+                json.dumps(attempt_details, ensure_ascii=False, separators=(",", ":")),
+            ]
+            lines.append(" / ".join(self._safe_field(value) for value in values))
+        return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def _safe_field(value: Any) -> str:
+        return str(value if value is not None else "").replace("\r", " ").replace("\n", " ").replace(" / ", " | ")
 
 
 def find_task_index_by_identity(tasks: List[RenderTask], task: Optional[RenderTask]) -> Optional[int]:
@@ -1669,9 +1991,10 @@ def run_qt_shell() -> int:
 
         COLUMNS = ("Order", "Status", "Level", "Sequence", "Preset", "Running Time", "Start", "End")
 
-        def __init__(self, parent, logs_dir: str):
+        def __init__(self, parent, logs_dirs: List[str]):
             super().__init__(parent)
-            self.logs_dir = logs_dir
+            self.logs_dirs = list(logs_dirs)
+            self.logs_dir = self.logs_dirs[0] if self.logs_dirs else preferred_logs_dir()
             self.current_log_path: Optional[str] = None
             self.setWindowTitle("Queue Logs")
             icon_path = app_icon_path()
@@ -1819,17 +2142,20 @@ def run_qt_shell() -> int:
             root.addWidget(right_panel, 1)
 
         def _queue_log_files(self) -> List[str]:
-            try:
-                files = [
-                    os.path.join(self.logs_dir, name)
-                    for name in os.listdir(self.logs_dir)
-                    if name.startswith("Queue_Log_") and name.endswith(".log")
-                ]
-            except FileNotFoundError:
-                return []
-            except Exception:
-                return []
-            files.sort(key=lambda path: os.path.basename(path), reverse=True)
+            files = []
+            seen = set()
+            for directory in self.logs_dirs:
+                try:
+                    names = os.listdir(directory)
+                except (FileNotFoundError, OSError):
+                    continue
+                for name in names:
+                    path = os.path.abspath(os.path.join(directory, name))
+                    key = os.path.normcase(path)
+                    if name.startswith("Queue_Log_") and name.endswith(".log") and key not in seen:
+                        seen.add(key)
+                        files.append(path)
+            files.sort(key=lambda path: (os.path.getmtime(path), os.path.basename(path)), reverse=True)
             return files
 
         def _log_created_display(self, path: str) -> str:
@@ -2074,8 +2400,9 @@ def run_qt_shell() -> int:
                 QMessageBox.critical(self, "Export Queue Log", str(exc))
 
         def open_log_folder(self) -> None:
-            os.makedirs(self.logs_dir, exist_ok=True)
-            self._open_path(self.logs_dir)
+            directory = os.path.dirname(self.current_log_path) if self.current_log_path else self.logs_dir
+            os.makedirs(directory, exist_ok=True)
+            self._open_path(directory)
 
         def delete_selected_log(self) -> None:
             if not self.current_log_path:
@@ -2131,6 +2458,9 @@ def run_qt_shell() -> int:
             self._runtime_session_id = 0
             self._session_started_at: Optional[float] = None
             self.current_session_commit_cl = ""
+            self._session_journals: dict[int, RenderSessionJournal] = {}
+            self._last_session_log_path = ""
+            self._last_session_save_error = ""
             self.table = None
             self.filter_edit = None
             self.ue_path_edit = None
@@ -2158,9 +2488,13 @@ def run_qt_shell() -> int:
             self.current_task_label = None
             self.current_status_label = None
             self.session_time_label = None
+            self.session_log_status_label = None
+            self.retry_save_button = None
             self.minimal_current_task_label = None
             self.minimal_current_status_label = None
             self.minimal_session_time_label = None
+            self.minimal_session_log_status_label = None
+            self.minimal_retry_save_button = None
             self.header_panel = None
             self.main_splitter = None
             self.queue_panel = None
@@ -2746,15 +3080,23 @@ def run_qt_shell() -> int:
                 button = self._mark_button(QPushButton(text))
                 button.clicked.connect(callback)
                 controls.addWidget(button)
+            self.retry_save_button = self._mark_button(QPushButton("Retry Save"), "danger")
+            self.retry_save_button.clicked.connect(self.retry_save_queue_log)
+            self.retry_save_button.setVisible(False)
+            controls.addWidget(self.retry_save_button)
             layout.addLayout(controls)
 
             status_row = QHBoxLayout()
             self.current_task_label = QLabel("Current task: Idle")
             self.current_status_label = QLabel("Status: Idle")
             self.session_time_label = QLabel("Session total: 00:00:00")
+            self.session_log_status_label = QLabel("Session log: not started")
+            self.session_log_status_label.setObjectName("MutedLabel")
+            self.session_log_status_label.setToolTip(preferred_logs_dir())
             status_row.addWidget(self.current_task_label)
             status_row.addWidget(self.current_status_label)
             status_row.addStretch(1)
+            status_row.addWidget(self.session_log_status_label)
             status_row.addWidget(self.session_time_label)
             layout.addLayout(status_row)
 
@@ -2827,10 +3169,20 @@ def run_qt_shell() -> int:
             self.minimal_current_task_label = QLabel("Current task: Idle")
             self.minimal_current_status_label = QLabel("Status: Idle")
             self.minimal_session_time_label = QLabel("Session total: 00:00:00")
+            self.minimal_session_log_status_label = QLabel("Log: not started")
+            self.minimal_session_log_status_label.setObjectName("MutedLabel")
+            self.minimal_retry_save_button = self._mark_button(QPushButton("Retry Save"), "danger")
+            self.minimal_retry_save_button.clicked.connect(self.retry_save_queue_log)
+            self.minimal_retry_save_button.setVisible(False)
+            minimal_open_logs_button = self._mark_button(QPushButton("Queue Logs"))
+            minimal_open_logs_button.clicked.connect(self.open_last_queue_log)
             layout.addWidget(self.minimal_session_time_label)
             layout.addWidget(QLabel("•"))
             layout.addWidget(self.minimal_current_task_label, 1)
             layout.addWidget(self.minimal_current_status_label)
+            layout.addWidget(self.minimal_session_log_status_label)
+            layout.addWidget(self.minimal_retry_save_button)
+            layout.addWidget(minimal_open_logs_button)
             return panel
 
         def enter_minimal_mode(self) -> None:
@@ -3093,12 +3445,12 @@ def run_qt_shell() -> int:
             return self.worker_gate.running
 
         def _set_status_from_core(self, task: RenderTask, text: str) -> None:
-            self.ui_events.put(TaskRuntimeEvent(
-                event_type=self._event_type_for_status(text),
+            self._put_runtime_event(
+                self._event_type_for_status(text),
+                task,
+                self._runtime_session_id,
                 status=text,
-                task=task,
-                session_id=self._runtime_session_id,
-            ))
+            )
 
         def _append_log(self, message: str) -> None:
             self.log_events.put(message)
@@ -3137,12 +3489,13 @@ def run_qt_shell() -> int:
             try:
                 while True:
                     event = self.ui_events.get_nowait()
-                    changed = self._apply_runtime_event(event) or changed
-                    if (
-                        event.event_type == TaskRuntimeEventType.QUEUE_COMPLETED
-                        and (event.session_id is None or event.session_id == self._runtime_session_id)
+                    if event.event_type in (
+                        TaskRuntimeEventType.SESSION_LOG_SAVED,
+                        TaskRuntimeEventType.SESSION_LOG_SAVE_FAILED,
                     ):
-                        self.save_queue_log(auto=True)
+                        self._apply_session_log_event(event)
+                        continue
+                    changed = self._apply_runtime_event(event) or changed
             except queue.Empty:
                 pass
             self._update_session_runtime()
@@ -3767,6 +4120,9 @@ def run_qt_shell() -> int:
         def _enqueue_tasks(self, tasks: List[RenderTask]) -> bool:
             tasks = self._filter_tasks_by_loaded_validation(tasks)
             changed = self.runtime_queue.enqueue_tasks(tasks, mark_queued=True, log_prefix="[Qt] Queued ")
+            journal = self._session_journals.get(self._runtime_session_id)
+            if journal is not None:
+                journal.include_tasks([task for task in tasks if self.runtime_queue.is_active_or_pending(task)])
             if changed or not tasks:
                 self.refresh_queue_view()
                 self._update_inspector()
@@ -3799,14 +4155,32 @@ def run_qt_shell() -> int:
                     return
                 self.current_session_commit_cl = commit_cl
                 self._runtime_session_id += 1
+                self._session_started_at = time.time()
                 self.stop_all = False
                 self.cancel_current_requested = False
+                self._last_session_log_path = ""
+                self._last_session_save_error = ""
+                if self.session_log_status_label:
+                    self.session_log_status_label.setText("Session log: pending")
+                if self.minimal_session_log_status_label:
+                    self.minimal_session_log_status_label.setText("Log: pending")
+                if self.retry_save_button:
+                    self.retry_save_button.setVisible(False)
+                if self.minimal_retry_save_button:
+                    self.minimal_retry_save_button.setVisible(False)
             if tasks:
                 self._enqueue_tasks(tasks)
             if self.runtime_queue.empty():
                 if starts_new_session:
                     QMessageBox.information(self, "Render", "No valid tasks to render. Check the Validate column and Job Inspector details.")
                 return
+            if starts_new_session:
+                self._session_journals[self._runtime_session_id] = RenderSessionJournal(
+                    self._runtime_session_id,
+                    self.runtime_queue.pending_tasks(),
+                    commit_cl=self.current_session_commit_cl,
+                    started_at=self._session_started_at,
+                )
             self._start_worker_if_needed()
 
         def _start_worker_if_needed(self) -> bool:
@@ -3826,7 +4200,7 @@ def run_qt_shell() -> int:
             start: Optional[float] = None,
             end: Optional[float] = None,
         ) -> None:
-            self.ui_events.put(TaskRuntimeEvent(
+            event = TaskRuntimeEvent(
                 event_type=event_type,
                 status=status,
                 progress=progress,
@@ -3834,7 +4208,75 @@ def run_qt_shell() -> int:
                 end=end,
                 task=task,
                 session_id=self._runtime_session_id if session_id is None else session_id,
+            )
+            journal = self._session_journals.get(event.session_id)
+            reached_terminal_state = journal.record_event(event) if journal else False
+            self.ui_events.put(event)
+            if reached_terminal_state:
+                self._checkpoint_session(event.session_id, final=False)
+
+        def _checkpoint_session(self, session_id: int, final: bool = False) -> Optional[str]:
+            """Persist a specific session independently of the currently displayed queue."""
+            journal = self._session_journals.get(session_id)
+            if journal is None:
+                return None
+            try:
+                path = journal.checkpoint(final=final)
+            except Exception as exc:
+                message = str(exc)
+                self._append_log(f"[Qt Logs] Session {journal.session_uid} save failed: {message}")
+                self.ui_events.put(TaskRuntimeEvent(
+                    event_type=TaskRuntimeEventType.SESSION_LOG_SAVE_FAILED,
+                    session_id=session_id,
+                    payload={"error": message, "final": bool(final)},
+                ))
+                return None
+            location_note = " (user fallback)" if journal.using_fallback else ""
+            self._append_log(f"[Qt Logs] Session summary saved{location_note}: {path}")
+            self.ui_events.put(TaskRuntimeEvent(
+                event_type=TaskRuntimeEventType.SESSION_LOG_SAVED,
+                session_id=session_id,
+                payload={"path": path, "fallback": journal.using_fallback, "final": bool(final)},
             ))
+            return path
+
+        def _apply_session_log_event(self, event: TaskRuntimeEvent) -> None:
+            """Keep save success/failure visible in both Full and Minimal Mode."""
+            if event.session_id != self._runtime_session_id:
+                return
+            payload = event.payload if isinstance(event.payload, dict) else {}
+            failed = event.event_type == TaskRuntimeEventType.SESSION_LOG_SAVE_FAILED
+            if failed:
+                error = str(payload.get("error", "Unknown save error"))
+                self._last_session_save_error = error
+                short = "Session log: SAVE FAILED"
+                minimal = "Log: SAVE FAILED"
+                tooltip = error
+                if self.statusBar():
+                    self.statusBar().showMessage(f"Session log save failed: {error}")
+                if payload.get("final"):
+                    QMessageBox.critical(
+                        self,
+                        "Session Log Save Failed",
+                        f"The render session could not be saved.\n\n{error}\n\nUse Retry Save after fixing access to the shown folders.",
+                    )
+            else:
+                path = str(payload.get("path", ""))
+                self._last_session_log_path = path
+                self._last_session_save_error = ""
+                short = f"Session log: saved{ ' to fallback' if payload.get('fallback') else '' }"
+                minimal = "Log: saved"
+                tooltip = path
+            if self.session_log_status_label:
+                self.session_log_status_label.setText(short)
+                self.session_log_status_label.setToolTip(tooltip)
+            if self.minimal_session_log_status_label:
+                self.minimal_session_log_status_label.setText(minimal)
+                self.minimal_session_log_status_label.setToolTip(tooltip)
+            if self.retry_save_button:
+                self.retry_save_button.setVisible(failed)
+            if self.minimal_retry_save_button:
+                self.minimal_retry_save_button.setVisible(failed)
 
         def _worker_loop(self) -> None:
             session_id = self._runtime_session_id
@@ -3846,6 +4288,9 @@ def run_qt_shell() -> int:
                 if self.process_controller.is_active():
                     self.process_controller.stop_current(int(self.settings.kill_timeout_s))
                 if active_task is not None:
+                    journal = self._session_journals.get(session_id)
+                    if journal:
+                        journal.fail_open_attempt(active_task, time.time(), str(exc))
                     self._put_runtime_event(
                         TaskRuntimeEventType.TASK_FAILED,
                         active_task,
@@ -3858,6 +4303,9 @@ def run_qt_shell() -> int:
             finally:
                 if self.stop_all:
                     self.runtime_queue.clear_pending(TaskRuntimeStatus.CANCELLED_QUEUE)
+                # Keep the worker reservation until final persistence finishes so
+                # close/restart cannot observe an unsaved completed session.
+                self._checkpoint_session(session_id, final=True)
                 restart = self.worker_gate.release_and_reserve_restart(
                     has_pending=not self.runtime_queue.empty(),
                     stopped=self.stop_all,
@@ -3921,9 +4369,18 @@ def run_qt_shell() -> int:
                         self._append_log(f"[Qt] [{local_counter}] Invalid Extra CLI: {exc}")
                         break
                     start_time = time.time()
-                    start_dt = datetime.now()
-                    logfile = self._task_logfile(task)
+                    start_dt = datetime.fromtimestamp(start_time)
+                    logfile = ""
                     log_fp = None
+                    journal = self._session_journals.get(session_id)
+                    task_log_error = ""
+                    try:
+                        logfile = self._task_logfile(task, session_id=session_id, attempt=attempt)
+                    except Exception as exc:
+                        task_log_error = f"Task log path unavailable: {exc}"
+                        self._append_log(f"[Qt Logs] [{local_counter}] {task_log_error}")
+                    if journal:
+                        journal.begin_attempt(task, attempt, start_time, logfile, task_log_error)
                     self._put_runtime_event(
                         TaskRuntimeEventType.TASK_STARTED,
                         task,
@@ -3933,39 +4390,68 @@ def run_qt_shell() -> int:
                         start=start_time,
                     )
                     self._append_log(f"[Qt] [{local_counter}] Start try {attempt}/{retries + 1}: {' '.join(cmd)}")
+                    if logfile:
+                        try:
+                            log_fp = open(logfile, "x", encoding="utf-8", newline="\n")
+                            log_fp.write(f"SESSION: {journal.session_uid if journal else session_id}\n")
+                            log_fp.write(f"ATTEMPT: {attempt}\n")
+                            log_fp.write(f"CMD: {' '.join(cmd)}\n")
+                            log_fp.write(f"START: {start_dt.strftime('%Y-%m-%d %H:%M:%S')}\n")
+                            log_fp.flush()
+                        except Exception as exc:
+                            task_log_error = f"Task log open/write failed ({logfile}): {exc}"
+                            self._append_log(f"[Qt Logs] [{local_counter}] {task_log_error}")
+                            if journal:
+                                journal.note_attempt_io_error(task, attempt, task_log_error)
+                            if log_fp:
+                                try:
+                                    log_fp.close()
+                                except Exception:
+                                    pass
+                            log_fp = None
                     try:
-                        log_fp = open(logfile, "a", encoding="utf-8")
-                        log_fp.write(f"CMD: {' '.join(cmd)}\n")
-                        log_fp.write(f"START: {start_dt.strftime('%Y-%m-%d %H:%M:%S')}\n")
                         process = self.process_controller.launch(cmd)
                     except Exception as exc:
+                        end_time = time.time()
                         if log_fp:
                             try:
                                 log_fp.write(f"FAILED TO START: {exc}\n")
+                                log_fp.flush()
                                 log_fp.close()
-                            except Exception:
-                                pass
+                            except Exception as log_exc:
+                                message = f"Task log finalization failed ({logfile}): {log_exc}"
+                                self._append_log(f"[Qt Logs] [{local_counter}] {message}")
+                                if journal:
+                                    journal.note_attempt_io_error(task, attempt, message)
                         self._append_log(f"[Qt] [{local_counter}] Failed to start: {exc}")
+                        if journal:
+                            journal.finish_attempt(task, attempt, end_time, "Failed to start", error=str(exc))
                         self._put_runtime_event(
                             TaskRuntimeEventType.TASK_FAILED,
                             task,
                             session_id,
                             status="Failed to start",
                             progress=0,
-                            end=time.time(),
+                            end=end_time,
                         )
                         break
+
+                    pump_errors = []
 
                     def pump_stdout(proc: subprocess.Popen, runtime_task: RenderTask, fp) -> None:
                         try:
                             if proc.stdout:
                                 for line in proc.stdout:
-                                    if self.stop_all:
-                                        break
                                     clean_line = line.rstrip()
                                     self._append_log(clean_line)
                                     if fp:
-                                        fp.write(clean_line + "\n")
+                                        try:
+                                            fp.write(clean_line + "\n")
+                                        except Exception as exc:
+                                            message = f"Task log stdout write failed ({logfile}): {exc}"
+                                            if not pump_errors:
+                                                self._append_log(f"[Qt Logs] [{local_counter}] {message}")
+                                            pump_errors.append(message)
                                     progress = self._extract_progress(clean_line)
                                     if progress is not None:
                                         self._put_runtime_event(
@@ -3975,7 +4461,9 @@ def run_qt_shell() -> int:
                                             progress=progress,
                                         )
                         except Exception as exc:
-                            self._append_log(f"[Qt pump] {exc}")
+                            message = f"Stdout reader failed: {exc}"
+                            pump_errors.append(message)
+                            self._append_log(f"[Qt pump] {message}")
                         finally:
                             if fp:
                                 try:
@@ -3999,23 +4487,38 @@ def run_qt_shell() -> int:
                     rc = process.wait()
                     self.process_controller.clear_if_current(process)
                     end_time = time.time()
-                    end_dt = datetime.now()
+                    end_dt = datetime.fromtimestamp(end_time)
                     try:
-                        pump_thread.join(timeout=0.2)
-                    except Exception:
-                        pass
+                        # This runs on the worker thread, not the Qt UI thread. Waiting
+                        # for EOF prevents the final Unreal output from being truncated.
+                        pump_thread.join()
+                    except Exception as exc:
+                        pump_errors.append(f"Stdout reader join failed: {exc}")
                     if log_fp:
                         try:
                             log_fp.write(f"END: {end_dt.strftime('%Y-%m-%d %H:%M:%S')}\n")
                             log_fp.write(f"EXIT: {rc}\n")
+                            log_fp.flush()
+                            os.fsync(log_fp.fileno())
                             log_fp.close()
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            message = f"Task log finalization failed ({logfile}): {exc}"
+                            pump_errors.append(message)
+                            self._append_log(f"[Qt Logs] [{local_counter}] {message}")
+                            try:
+                                log_fp.close()
+                            except Exception:
+                                pass
+                    if journal:
+                        for message in dict.fromkeys(pump_errors):
+                            journal.note_attempt_io_error(task, attempt, message)
                     self._put_runtime_event(TaskRuntimeEventType.PROGRESS_UPDATED, task, session_id, end=end_time)
                     self._append_log(f"[Qt] [{local_counter}] Exit code: {rc}")
 
                     if self.cancel_current_requested:
                         self.cancel_current_requested = False
+                        if journal:
+                            journal.finish_attempt(task, attempt, end_time, TaskRuntimeStatus.CANCELLED, exit_code=rc)
                         self._put_runtime_event(
                             TaskRuntimeEventType.TASK_CANCELLED,
                             task,
@@ -4027,6 +4530,8 @@ def run_qt_shell() -> int:
                         break
                     if rc == 0:
                         duration = format_duration_hms(end_time - start_time)
+                        if journal:
+                            journal.finish_attempt(task, attempt, end_time, f"Done ({duration})", exit_code=rc)
                         self._put_runtime_event(
                             TaskRuntimeEventType.TASK_FINISHED,
                             task,
@@ -4037,6 +4542,8 @@ def run_qt_shell() -> int:
                         )
                         break
                     if policy == "stop_queue":
+                        if journal:
+                            journal.finish_attempt(task, attempt, end_time, f"Failed (rc={rc})", exit_code=rc)
                         self._put_runtime_event(
                             TaskRuntimeEventType.TASK_FAILED,
                             task,
@@ -4047,8 +4554,18 @@ def run_qt_shell() -> int:
                         self.stop_all = True
                         break
                     if attempt <= retries:
+                        if journal:
+                            journal.finish_attempt(
+                                task,
+                                attempt,
+                                end_time,
+                                f"Failed (rc={rc}; retry scheduled)",
+                                exit_code=rc,
+                            )
                         self._append_log(f"[Qt] [{local_counter}] Will retry.")
                     else:
+                        if journal:
+                            journal.finish_attempt(task, attempt, end_time, f"Failed (rc={rc})", exit_code=rc)
                         self._put_runtime_event(
                             TaskRuntimeEventType.TASK_FAILED,
                             task,
@@ -4064,23 +4581,49 @@ def run_qt_shell() -> int:
                     break
 
         def _logs_dir(self) -> str:
-            return os.path.join(os.getcwd(), "mrq_logs")
+            journal = self._session_journals.get(self._runtime_session_id)
+            return journal.write_dir if journal and journal.write_dir else preferred_logs_dir()
 
-        def _task_logfile(self, task: RenderTask) -> str:
+        def _logs_dirs_for_read(self) -> List[str]:
+            """Include the stable location, fallback, and pre-1.10.30 cwd logs."""
+            journal = self._session_journals.get(self._runtime_session_id)
+            candidates = [
+                journal.write_dir if journal else None,
+                preferred_logs_dir(),
+                fallback_logs_dir(),
+                os.path.join(os.getcwd(), "mrq_logs"),
+            ]
+            result = []
+            seen = set()
+            for path in candidates:
+                if not path:
+                    continue
+                absolute = os.path.abspath(path)
+                key = os.path.normcase(absolute)
+                if key not in seen:
+                    seen.add(key)
+                    result.append(absolute)
+            return result
+
+        def _task_logfile(self, task: RenderTask, session_id: Optional[int] = None, attempt: int = 1) -> str:
+            resolved_session_id = self._runtime_session_id if session_id is None else session_id
+            journal = self._session_journals.get(resolved_session_id)
+            if journal:
+                return journal.task_log_path(task, attempt)
             base = f"{soft_name(task.level)}__{soft_name(task.sequence)}__{soft_name(task.preset)}"
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            logs_dir = self._logs_dir()
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            logs_dir = preferred_logs_dir()
             os.makedirs(logs_dir, exist_ok=True)
-            return os.path.join(logs_dir, f"{timestamp}_{base}.log")
+            return os.path.join(logs_dir, f"Task_Log_{timestamp}_{uuid.uuid4().hex[:8]}_A{attempt:03d}_{base}.log")
 
         def _queue_log_default_path(self) -> str:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
             logs_dir = self._logs_dir()
             os.makedirs(logs_dir, exist_ok=True)
             commit_cl = (self.current_session_commit_cl or "").strip()
             if commit_cl:
-                return os.path.join(logs_dir, f"Queue_Log_{commit_cl}_{timestamp}.log")
-            return os.path.join(logs_dir, f"Queue_Log_{timestamp}.log")
+                return os.path.join(logs_dir, f"Queue_Log_{commit_cl}_{timestamp}_{uuid.uuid4().hex[:8]}.log")
+            return os.path.join(logs_dir, f"Queue_Log_{timestamp}_{uuid.uuid4().hex[:8]}.log")
 
         def _format_hms(self, seconds: Optional[int]) -> str:
             if seconds is None:
@@ -4094,8 +4637,8 @@ def run_qt_shell() -> int:
             """Build queue log rows from the same data shown in Minimal Mode."""
             rows = ["Order / Status / Level / Sequence / Preset / Running Time / Start / End"]
             ordered_indices = self._ordered_task_indices()
-            if not ordered_indices:
-                ordered_indices = list(range(len(self.settings.tasks)))
+            ordered_set = set(ordered_indices)
+            ordered_indices.extend(idx for idx in range(len(self.settings.tasks)) if idx not in ordered_set)
             ordered_indices = sorted(
                 ordered_indices,
                 key=lambda idx: self._queue_order_for_task(self.settings.tasks[idx]) or idx + 1,
@@ -4119,28 +4662,55 @@ def run_qt_shell() -> int:
             return rows
 
         def save_queue_log(self, auto: bool = False) -> Optional[str]:
+            journal = self._session_journals.get(self._runtime_session_id)
+            if journal is None:
+                journal = RenderSessionJournal(
+                    self._runtime_session_id,
+                    list(self.settings.tasks),
+                    commit_cl=self.current_session_commit_cl,
+                )
+                for task, state in zip(self.settings.tasks, self.state):
+                    journal.record_event(TaskRuntimeEvent(
+                        event_type="manual_snapshot",
+                        task=task,
+                        session_id=self._runtime_session_id,
+                        status=state.get("status"),
+                        progress=state.get("progress"),
+                        start=state.get("start"),
+                        end=state.get("end"),
+                    ))
+                self._session_journals[self._runtime_session_id] = journal
             try:
-                path = self._queue_log_default_path()
-                with open(path, "w", encoding="utf-8") as handle:
-                    handle.write("\n".join(self._collect_queue_log_rows()) + "\n")
+                path = journal.checkpoint(final=False)
                 label = "auto-saved" if auto else "saved"
-                self._append_log(f"[Qt Logs] Queue summary {label}: {os.path.basename(path)}")
+                self._append_log(f"[Qt Logs] Queue summary {label}: {path}")
+                self._apply_session_log_event(TaskRuntimeEvent(
+                    event_type=TaskRuntimeEventType.SESSION_LOG_SAVED,
+                    session_id=self._runtime_session_id,
+                    payload={"path": path, "fallback": journal.using_fallback, "final": False},
+                ))
                 return path
             except Exception as exc:
-                if auto:
-                    self._append_log(f"[Qt Logs] Failed to auto-save queue summary: {exc}")
-                else:
-                    QMessageBox.critical(self, "Save Queue Log", str(exc))
+                self._append_log(f"[Qt Logs] Failed to save queue summary: {exc}")
+                self._apply_session_log_event(TaskRuntimeEvent(
+                    event_type=TaskRuntimeEventType.SESSION_LOG_SAVE_FAILED,
+                    session_id=self._runtime_session_id,
+                    payload={"error": str(exc), "final": bool(auto)},
+                ))
                 return None
+
+        def retry_save_queue_log(self) -> None:
+            self.save_queue_log(auto=False)
 
         def open_last_queue_log(self) -> None:
             """Open the queue log browser and select the newest saved queue log."""
-            logs_dir = self._logs_dir()
-            os.makedirs(logs_dir, exist_ok=True)
+            logs_dirs = self._logs_dirs_for_read()
             try:
                 if self.queue_log_viewer is None or not self.queue_log_viewer.isVisible():
-                    self.queue_log_viewer = QtQueueLogViewer(self, logs_dir)
+                    self.queue_log_viewer = QtQueueLogViewer(self, logs_dirs)
                 else:
+                    self.queue_log_viewer.logs_dirs = logs_dirs
+                    self.queue_log_viewer.logs_dir = logs_dirs[0]
                     self.queue_log_viewer.refresh_logs()
                 self.queue_log_viewer.show()
                 self.queue_log_viewer.raise_()
@@ -4160,8 +4730,16 @@ def run_qt_shell() -> int:
                 QMessageBox.critical(self, "Open Path", str(exc))
 
         def open_logs_folder(self) -> None:
-            logs_dir = self._logs_dir()
-            os.makedirs(logs_dir, exist_ok=True)
+            journal = self._session_journals.get(self._runtime_session_id)
+            if journal and journal.write_dir:
+                logs_dir = journal.write_dir
+            else:
+                probe = RenderSessionJournal(self._runtime_session_id, [])
+                try:
+                    logs_dir = probe._resolve_write_dir()
+                except Exception as exc:
+                    QMessageBox.critical(self, "Open Logs Folder", str(exc))
+                    return
             self._open_path(logs_dir)
 
         def open_last_log_for_selected(self) -> None:
@@ -4169,23 +4747,52 @@ def run_qt_shell() -> int:
             if task is None:
                 QMessageBox.information(self, "Open Last Log", "Select a task first.")
                 return
-            logs_dir = self._logs_dir()
             base = f"{soft_name(task.level)}__{soft_name(task.sequence)}__{soft_name(task.preset)}"
-            try:
-                files = [
-                    name for name in os.listdir(logs_dir)
-                    if name.endswith(".log") and name.endswith(f"{base}.log")
-                ]
-            except FileNotFoundError:
-                files = []
-            except Exception as exc:
-                QMessageBox.critical(self, "Open Last Log", str(exc))
-                return
+            files = []
+            errors = []
+            for logs_dir in self._logs_dirs_for_read():
+                try:
+                    files.extend(
+                        os.path.join(logs_dir, name)
+                        for name in os.listdir(logs_dir)
+                        if name.endswith(".log") and name.endswith(f"{base}.log")
+                    )
+                except FileNotFoundError:
+                    continue
+                except Exception as exc:
+                    errors.append(f"{logs_dir}: {exc}")
             if not files:
-                QMessageBox.information(self, "Open Last Log", "No logs found for selected task.")
+                detail = f"\n\nUnreadable locations:\n" + "\n".join(errors) if errors else ""
+                QMessageBox.information(self, "Open Last Log", f"No logs found for selected task.{detail}")
                 return
-            files.sort(reverse=True)
-            self._open_path(os.path.join(logs_dir, files[0]))
+            files.sort(key=os.path.getmtime, reverse=True)
+            self._open_path(files[0])
+
+        def closeEvent(self, event) -> None:
+            """Checkpoint confirmed session state before an orderly application close."""
+            journal = self._session_journals.get(self._runtime_session_id)
+            if journal is None:
+                event.accept()
+                return
+            try:
+                journal.checkpoint(final=not self.worker_running)
+            except Exception as exc:
+                reply = QMessageBox.critical(
+                    self,
+                    "Session Log Save Failed",
+                    f"The current render history could not be saved.\n\n{exc}\n\nRetry after fixing access, or Ignore to close without another save attempt.",
+                    QMessageBox.Retry | QMessageBox.Ignore,
+                    QMessageBox.Retry,
+                )
+                if reply == QMessageBox.Retry:
+                    event.ignore()
+                    self._apply_session_log_event(TaskRuntimeEvent(
+                        event_type=TaskRuntimeEventType.SESSION_LOG_SAVE_FAILED,
+                        session_id=self._runtime_session_id,
+                        payload={"error": str(exc), "final": False},
+                    ))
+                    return
+            event.accept()
 
         def clear_status_selected(self) -> None:
             indices = self.selected_indices()
