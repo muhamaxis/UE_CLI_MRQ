@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.10.30"
+APP_VERSION = "1.10.31"
 
 UI_THEME = {
     "bg": "#111318",
@@ -50,6 +50,15 @@ STATUS_PILL_THEME = {
 
 APP_ICON_RELATIVE_PATH = "resources/app_icon.ico"
 APP_HEADER_LOGO_RELATIVE_PATH = "resources/mrq_launcher_logo_167.png"
+APP_ICON_SET_RELATIVE_PATH = "resources/icons"
+
+ACTION_ICON_NAMES = {
+    "add", "append-queue", "browse", "chevron-down", "chevron-right", "clear",
+    "copy", "disable", "duplicate", "edit", "enable", "export", "folder",
+    "load-queue", "load-task", "logs", "mode-full", "mode-minimal", "move-down",
+    "move-up", "refresh", "remove", "render", "retry", "save-queue", "save-task",
+    "settings", "stop-all", "stop-current", "validate", "warning",
+}
 # -------------------------------------------------
 # Helpers
 # -------------------------------------------------
@@ -70,6 +79,13 @@ def app_icon_path() -> str:
 def app_header_logo_path() -> str:
     """Return the header logo path used by full-size launcher views."""
     return resource_path(APP_HEADER_LOGO_RELATIVE_PATH)
+
+
+def action_icon_path(name: str) -> str:
+    """Return a packaged SVG path from the known application icon catalog."""
+    if name not in ACTION_ICON_NAMES:
+        raise KeyError(f"Unknown action icon: {name}")
+    return resource_path(f"{APP_ICON_SET_RELATIVE_PATH}/{name}.svg")
 
 
 def user_settings_path() -> str:
@@ -1301,8 +1317,9 @@ def build_unreal_command_preview(settings: AppSettings, task: RenderTask) -> str
 def run_qt_shell() -> int:
     """Launch the PySide6 queue workspace without replacing the Tkinter launcher."""
     try:
-        from PySide6.QtCore import QEvent, Qt, QTimer, QSize
+        from PySide6.QtCore import QByteArray, QEvent, Qt, QTimer, QSize
         from PySide6.QtGui import QColor, QBrush, QIcon, QPalette, QFont, QPainter, QPen, QPixmap, QIntValidator
+        from PySide6.QtSvg import QSvgRenderer
         from PySide6.QtWidgets import (
             QApplication, QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
             QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPushButton,
@@ -1312,6 +1329,74 @@ def run_qt_shell() -> int:
         print("PySide6 is required for the Qt shell. Install it with: pip install PySide6")
         print(f"Import error: {exc}")
         return 1
+
+    class QtIconCatalog:
+        """Load and tint the repository SVG set for every Qt action surface."""
+
+        COLORS = {
+            "secondary": ("#D7DEE8", "#FFFFFF", "#667386"),
+            "primary": ("#FFFFFF", "#FFFFFF", "#7896B8"),
+            "warning": ("#FFFFFF", "#FFFFFF", "#8B7867"),
+            "danger": ("#FFB3B0", "#FFFFFF", "#805D63"),
+            "ghost": ("#9AA6B8", "#F5F7FA", "#596476"),
+        }
+        SIZES = (16, 20, 24, 32, 40, 48)
+
+        def __init__(self):
+            self._cache = {}
+
+        def _pixmap(self, svg_text: str, color: str, size: int) -> QPixmap:
+            renderer = QSvgRenderer(QByteArray(svg_text.replace("currentColor", color).encode("utf-8")))
+            pixmap = QPixmap(size, size)
+            pixmap.fill(Qt.transparent)
+            painter = QPainter(pixmap)
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            renderer.render(painter)
+            painter.end()
+            return pixmap
+
+        def icon(self, name: str, role: str = "secondary") -> QIcon:
+            cache_key = (name, role)
+            if cache_key in self._cache:
+                return self._cache[cache_key]
+            path = action_icon_path(name)
+            try:
+                with open(path, "r", encoding="utf-8") as handle:
+                    svg_text = handle.read()
+            except OSError:
+                return QIcon()
+            normal, active, disabled = self.COLORS.get(role, self.COLORS["secondary"])
+            icon = QIcon()
+            for size in self.SIZES:
+                icon.addPixmap(self._pixmap(svg_text, normal, size), QIcon.Normal, QIcon.Off)
+                icon.addPixmap(self._pixmap(svg_text, active, size), QIcon.Active, QIcon.Off)
+                icon.addPixmap(self._pixmap(svg_text, disabled, size), QIcon.Disabled, QIcon.Off)
+            self._cache[cache_key] = icon
+            return icon
+
+        def apply_button(
+            self,
+            button: QPushButton,
+            name: str,
+            role: str = "secondary",
+            size: int = 18,
+            tooltip: Optional[str] = None,
+            accessible_name: Optional[str] = None,
+        ) -> QPushButton:
+            button.setIcon(self.icon(name, role))
+            button.setIconSize(QSize(size, size))
+            label = accessible_name or button.text().replace("&", "").strip()
+            if label:
+                button.setAccessibleName(label)
+            if tooltip:
+                button.setToolTip(tooltip)
+            return button
+
+        def apply_action(self, action, name: str, role: str = "secondary"):
+            action.setIcon(self.icon(name, role))
+            return action
+
+    qt_icons = QtIconCatalog()
 
     def apply_qt_dark_theme(app: QApplication) -> None:
         """Apply an Apple-inspired dark production theme to the Qt shell."""
@@ -1438,6 +1523,14 @@ def run_qt_shell() -> int:
             }}
             QPushButton:pressed {{
                 background-color: {apple['accent_soft']};
+            }}
+            QPushButton:focus {{
+                border: 1px solid {apple['accent']};
+            }}
+            QPushButton:disabled {{
+                background-color: #181D26;
+                border-color: {apple['border_soft']};
+                color: {apple['muted2']};
             }}
             QPushButton[role="primary"] {{
                 background-color: {apple['accent']};
@@ -1751,8 +1844,11 @@ def run_qt_shell() -> int:
             warning.setStyleSheet("QFrame#ToolbarStrip { border-color: #E07B24; background-color: rgba(199, 106, 29, 32); }")
             warning_layout = QHBoxLayout(warning)
             warning_layout.setContentsMargins(14, 12, 14, 12)
-            icon = QLabel("⚠", warning)
-            icon.setStyleSheet("color: #FF9F0A; font-size: 28px; font-weight: 800; background: transparent; border: none;")
+            icon = QLabel(warning)
+            icon.setPixmap(qt_icons.icon("warning", "warning").pixmap(QSize(28, 28)))
+            icon.setAccessibleName("Warning")
+            icon.setFixedSize(32, 32)
+            icon.setAlignment(Qt.AlignCenter)
             warning_layout.addWidget(icon)
             warning_text = QVBoxLayout()
             title = QLabel("Before starting the render", warning)
@@ -1814,8 +1910,9 @@ def run_qt_shell() -> int:
 
             buttons = QHBoxLayout()
             buttons.addStretch(1)
-            start_button = QPushButton("▶  Start Rendering", self)
+            start_button = QPushButton("Start Rendering", self)
             start_button.setProperty("role", "warning")
+            qt_icons.apply_button(start_button, "render", "warning", 20)
             start_button.setMinimumWidth(210)
             start_button.setMinimumHeight(40)
             start_button.clicked.connect(self._accept_start)
@@ -1859,6 +1956,7 @@ def run_qt_shell() -> int:
                 form.addWidget(QLabel(label_text), row, 0)
                 form.addWidget(edit, row, 1)
                 button = QPushButton("Browse")
+                qt_icons.apply_button(button, "browse")
                 button.clicked.connect(browse_cb)
                 form.addWidget(button, row, 2)
 
@@ -2004,8 +2102,10 @@ def run_qt_shell() -> int:
             self._build_ui()
             self.refresh_logs()
 
-        def _mark_button(self, button: QPushButton, role: str = "secondary") -> QPushButton:
+        def _mark_button(self, button: QPushButton, role: str = "secondary", icon_name: Optional[str] = None) -> QPushButton:
             button.setProperty("role", role)
+            if icon_name:
+                qt_icons.apply_button(button, icon_name, role)
             return button
 
         def _build_ui(self) -> None:
@@ -2029,7 +2129,7 @@ def run_qt_shell() -> int:
             title_block.addWidget(title)
             title_block.addWidget(self.total_label)
             title_row.addLayout(title_block, 1)
-            refresh_button = self._mark_button(QPushButton("Refresh"))
+            refresh_button = self._mark_button(QPushButton("Refresh"), icon_name="refresh")
             refresh_button.clicked.connect(self.refresh_logs)
             title_row.addWidget(refresh_button)
             left_layout.addLayout(title_row)
@@ -2046,9 +2146,9 @@ def run_qt_shell() -> int:
             left_layout.addWidget(self.log_list, 1)
 
             left_buttons = QHBoxLayout()
-            open_folder = self._mark_button(QPushButton("Open Log Folder"))
+            open_folder = self._mark_button(QPushButton("Open Log Folder"), icon_name="folder")
             open_folder.clicked.connect(self.open_log_folder)
-            delete_log = self._mark_button(QPushButton("Delete Log..."), "danger")
+            delete_log = self._mark_button(QPushButton("Delete Log..."), "danger", "remove")
             delete_log.clicked.connect(self.delete_selected_log)
             left_buttons.addWidget(open_folder)
             left_buttons.addWidget(delete_log)
@@ -2069,9 +2169,9 @@ def run_qt_shell() -> int:
             title_col.addWidget(self.log_title)
             title_col.addWidget(self.log_meta)
             top_row.addLayout(title_col, 1)
-            copy_button = self._mark_button(QPushButton("Copy to Clipboard"))
+            copy_button = self._mark_button(QPushButton("Copy to Clipboard"), icon_name="copy")
             copy_button.clicked.connect(self.copy_selected_log)
-            export_button = self._mark_button(QPushButton("Export..."))
+            export_button = self._mark_button(QPushButton("Export..."), icon_name="export")
             export_button.clicked.connect(self.export_selected_log)
             top_row.addWidget(export_button)
             top_row.addWidget(copy_button)
@@ -2504,6 +2604,7 @@ def run_qt_shell() -> int:
             self.minimal_footer = None
             self.queue_title_label = None
             self.queue_toolbar_panel = None
+            self.toggle_all_button = None
             self.minimal_mode = False
             self._normal_geometry = None
             self.queue_log_viewer = None
@@ -2564,9 +2665,11 @@ def run_qt_shell() -> int:
             panel.setFrameShape(QFrame.StyledPanel)
             return panel
 
-        def _mark_button(self, button: QPushButton, role: str = "secondary") -> QPushButton:
+        def _mark_button(self, button: QPushButton, role: str = "secondary", icon_name: Optional[str] = None) -> QPushButton:
             """Assign a visual role used by the shared Qt stylesheet."""
             button.setProperty("role", role)
+            if icon_name:
+                qt_icons.apply_button(button, icon_name, role)
             return button
 
         def _section_label(self, text: str) -> QLabel:
@@ -2650,11 +2753,11 @@ def run_qt_shell() -> int:
             title_block.addWidget(subtitle)
             title_block.addStretch(1)
             top_row.addLayout(title_block, 1)
-            load_button = self._mark_button(QPushButton("Load Queue ▾"))
+            load_button = self._mark_button(QPushButton("Load Queue"), icon_name="load-queue")
             load_button.clicked.connect(self.show_recent_queue_menu)
-            save_button = self._mark_button(QPushButton("Save Queue"))
+            save_button = self._mark_button(QPushButton("Save Queue"), icon_name="save-queue")
             save_button.clicked.connect(self.save_queue_dialog)
-            minimal_button = self._mark_button(QPushButton("Minimal Mode"), "primary")
+            minimal_button = self._mark_button(QPushButton("Minimal Mode"), "primary", "mode-minimal")
             minimal_button.clicked.connect(self.enter_minimal_mode)
             top_row.addWidget(load_button)
             top_row.addWidget(save_button)
@@ -2673,8 +2776,12 @@ def run_qt_shell() -> int:
 
             title_row = QHBoxLayout()
             title_row.setSpacing(10)
-            self.command_settings_toggle = QPushButton("▾", options_panel)
+            self.command_settings_toggle = QPushButton(options_panel)
             self.command_settings_toggle.setObjectName("DisclosureButton")
+            qt_icons.apply_button(
+                self.command_settings_toggle, "chevron-down", "ghost", 18,
+                "Collapse command settings", "Collapse command settings",
+            )
             self.command_settings_toggle.clicked.connect(self._toggle_command_settings_panel)
             title_row.addWidget(self.command_settings_toggle)
 
@@ -2699,7 +2806,7 @@ def run_qt_shell() -> int:
 
             self.ue_path_edit = QLineEdit(self.settings.ue_cmd, self.command_settings_body)
             self.ue_path_edit.textChanged.connect(self._on_ue_path_changed)
-            browse_button = self._mark_button(QPushButton("Browse", self.command_settings_body))
+            browse_button = self._mark_button(QPushButton("Browse", self.command_settings_body), icon_name="browse")
             browse_button.clicked.connect(self.browse_unreal_cmd)
 
             self.retries_spin = QSpinBox(options_panel)
@@ -2776,7 +2883,15 @@ def run_qt_shell() -> int:
                     self.command_settings_panel.setMinimumHeight(72)
                     self.command_settings_panel.setMaximumHeight(82)
             if self.command_settings_toggle:
-                self.command_settings_toggle.setText("▾" if self.command_settings_expanded else "▸")
+                expanded = self.command_settings_expanded
+                qt_icons.apply_button(
+                    self.command_settings_toggle,
+                    "chevron-down" if expanded else "chevron-right",
+                    "ghost",
+                    18,
+                    "Collapse command settings" if expanded else "Expand command settings",
+                    "Collapse command settings" if expanded else "Expand command settings",
+                )
             self._update_command_settings_summary()
             if self.command_settings_panel:
                 self.command_settings_panel.updateGeometry()
@@ -2902,11 +3017,11 @@ def run_qt_shell() -> int:
             title_block.addWidget(title)
             title_block.addWidget(subtitle)
             layout.addLayout(title_block, 1)
-            stop_current = self._mark_button(QPushButton("Stop Current"))
+            stop_current = self._mark_button(QPushButton("Stop Current"), icon_name="stop-current")
             stop_current.clicked.connect(self.cancel_current)
-            stop_all = self._mark_button(QPushButton("Stop All"), "danger")
+            stop_all = self._mark_button(QPushButton("Stop All"), "danger", "stop-all")
             stop_all.clicked.connect(self.cancel_all)
-            exit_button = self._mark_button(QPushButton("Exit Minimal Mode"), "primary")
+            exit_button = self._mark_button(QPushButton("Exit Minimal Mode"), "primary", "mode-full")
             exit_button.clicked.connect(self.exit_minimal_mode)
             layout.addWidget(stop_current)
             layout.addWidget(stop_all)
@@ -2923,18 +3038,21 @@ def run_qt_shell() -> int:
             toolbar = QHBoxLayout(self.queue_toolbar_panel)
             toolbar.setContentsMargins(10, 10, 10, 10)
             toolbar.setSpacing(8)
-            for text, callback in (
-                ("Add Job", self.add_task_dialog),
-                ("Load Task(s)", self.load_task_dialog),
-                ("Save Selected", self.save_selected_tasks_dialog),
-                ("Edit", self.edit_selected_task),
-                ("Duplicate", self.duplicate_selected),
-                ("Remove", self.remove_selected),
-                ("Move Up", lambda: self.move_selected(-1)),
-                ("Move Down", lambda: self.move_selected(1)),
-                ("Toggle All", self.toggle_all_ready_disabled),
+            for text, icon_name, callback in (
+                ("Add Job", "add", self.add_task_dialog),
+                ("Load Task(s)", "load-task", self.load_task_dialog),
+                ("Save Selected", "save-task", self.save_selected_tasks_dialog),
+                ("Edit", "edit", self.edit_selected_task),
+                ("Duplicate", "duplicate", self.duplicate_selected),
+                ("Remove", "remove", self.remove_selected),
+                ("Move Up", "move-up", lambda: self.move_selected(-1)),
+                ("Move Down", "move-down", lambda: self.move_selected(1)),
+                ("Toggle All", "enable", self.toggle_all_ready_disabled),
             ):
-                button = self._mark_button(QPushButton(text))
+                role = "danger" if icon_name == "remove" else "secondary"
+                button = self._mark_button(QPushButton(text), role, icon_name)
+                if text == "Toggle All":
+                    self.toggle_all_button = button
                 button.clicked.connect(callback)
                 toolbar.addWidget(button)
             toolbar.addStretch(1)
@@ -2970,9 +3088,11 @@ def run_qt_shell() -> int:
             layout.addWidget(self.table, 1)
             return panel
 
-        def _add_context_action(self, menu: QMenu, label: str, callback, enabled: bool = True):
+        def _add_context_action(self, menu: QMenu, label: str, callback, enabled: bool = True, icon_name: Optional[str] = None, role: str = "secondary"):
             """Add a context-menu action with consistent enabled-state handling."""
             action = menu.addAction(label)
+            if icon_name:
+                qt_icons.apply_action(action, icon_name, role)
             action.setEnabled(enabled)
             if enabled:
                 action.triggered.connect(callback)
@@ -3004,25 +3124,28 @@ def run_qt_shell() -> int:
             has_tasks = bool(self.settings.tasks)
 
             menu = QMenu(self.table)
-            self._add_context_action(menu, "Add Task", self.add_task_dialog)
-            self._add_context_action(menu, "Edit Task", self.edit_selected_task, has_selection)
-            self._add_context_action(menu, "Duplicate Task", self.duplicate_selected, has_selection)
-            self._add_context_action(menu, "Remove Task(s)", self.remove_selected, has_selection)
+            self._add_context_action(menu, "Add Task", self.add_task_dialog, icon_name="add")
+            self._add_context_action(menu, "Edit Task", self.edit_selected_task, has_selection, "edit")
+            self._add_context_action(menu, "Duplicate Task", self.duplicate_selected, has_selection, "duplicate")
+            self._add_context_action(menu, "Remove Task(s)", self.remove_selected, has_selection, "remove", "danger")
             menu.addSeparator()
-            self._add_context_action(menu, "Move Up", lambda: self.move_selected(-1), can_move_single)
-            self._add_context_action(menu, "Move Down", lambda: self.move_selected(1), can_move_single)
-            self._add_context_action(menu, "Toggle All Ready/Disabled", self.toggle_all_ready_disabled, has_tasks)
+            self._add_context_action(menu, "Move Up", lambda: self.move_selected(-1), can_move_single, "move-up")
+            self._add_context_action(menu, "Move Down", lambda: self.move_selected(1), can_move_single, "move-down")
+            self._add_context_action(
+                menu, "Toggle All Ready/Disabled", self.toggle_all_ready_disabled,
+                has_tasks, self._toggle_all_icon_name(),
+            )
             menu.addSeparator()
             section = menu.addAction("Task Save/Load")
             section.setEnabled(False)
-            self._add_context_action(menu, "Load Task(s)...", self.load_task_dialog)
-            self._add_context_action(menu, "Save Selected Task(s)...", self.save_selected_tasks_dialog, has_selection)
+            self._add_context_action(menu, "Load Task(s)...", self.load_task_dialog, icon_name="load-task")
+            self._add_context_action(menu, "Save Selected Task(s)...", self.save_selected_tasks_dialog, has_selection, "save-task")
             menu.addSeparator()
-            self._add_context_action(menu, "Load Queue...", self.load_queue_dialog)
-            self._add_context_action(menu, "Save Queue...", self.save_queue_dialog)
-            self._add_context_action(menu, "Save Queue Log...", self.save_queue_log)
+            self._add_context_action(menu, "Load Queue...", self.load_queue_dialog, icon_name="load-queue")
+            self._add_context_action(menu, "Save Queue...", self.save_queue_dialog, icon_name="save-queue")
+            self._add_context_action(menu, "Save Queue Log...", self.save_queue_log, icon_name="logs")
             menu.addSeparator()
-            self._add_context_action(menu, "Clear Status", self.clear_status_selected, has_selection)
+            self._add_context_action(menu, "Clear Status", self.clear_status_selected, has_selection, "clear")
             menu.exec(self.table.viewport().mapToGlobal(pos))
 
         def _build_inspector_area(self) -> QFrame:
@@ -3044,10 +3167,10 @@ def run_qt_shell() -> int:
                 self.inspector_labels[key] = label
                 layout.addWidget(label)
             layout.addStretch(1)
-            validate_button = self._mark_button(QPushButton("Validate"), "primary")
+            validate_button = self._mark_button(QPushButton("Validate"), "primary", "validate")
             validate_button.clicked.connect(self.validate_queue_tasks)
             layout.addWidget(validate_button)
-            fix_button = self._mark_button(QPushButton("Fix Project Path"))
+            fix_button = self._mark_button(QPushButton("Fix Project Path"), icon_name="settings")
             fix_button.clicked.connect(self.fix_project_path_for_queue)
             layout.addWidget(fix_button)
             return panel
@@ -3059,28 +3182,28 @@ def run_qt_shell() -> int:
 
             controls = QHBoxLayout()
             controls.setSpacing(8)
-            for text, callback, role in (
-                ("Render Enabled", self.render_enabled, "warning"),
-                ("Render Selected", self.render_selected, "warning"),
-                ("Queue Selected", self.queue_selected_or_enabled, "secondary"),
-                ("Clear Status", self.clear_status_selected, "secondary"),
-                ("Stop Current Render", self.cancel_current, "secondary"),
+            for text, icon_name, callback, role in (
+                ("Render Enabled", "render", self.render_enabled, "warning"),
+                ("Render Selected", "render", self.render_selected, "warning"),
+                ("Queue Selected", "append-queue", self.queue_selected_or_enabled, "secondary"),
+                ("Clear Status", "clear", self.clear_status_selected, "secondary"),
+                ("Stop Current Render", "stop-current", self.cancel_current, "secondary"),
             ):
-                button = self._mark_button(QPushButton(text), role)
+                button = self._mark_button(QPushButton(text), role, icon_name)
                 button.clicked.connect(callback)
                 controls.addWidget(button)
-            stop_all = self._mark_button(QPushButton("Stop All"), "danger")
+            stop_all = self._mark_button(QPushButton("Stop All"), "danger", "stop-all")
             stop_all.clicked.connect(self.cancel_all)
             controls.addWidget(stop_all)
             controls.addStretch(1)
-            for text, callback in (
-                ("Save Queue Log", self.save_queue_log),
-                ("Queue Logs", self.open_last_queue_log),
+            for text, icon_name, callback in (
+                ("Save Queue Log", "save-queue", self.save_queue_log),
+                ("Queue Logs", "logs", self.open_last_queue_log),
             ):
-                button = self._mark_button(QPushButton(text))
+                button = self._mark_button(QPushButton(text), icon_name=icon_name)
                 button.clicked.connect(callback)
                 controls.addWidget(button)
-            self.retry_save_button = self._mark_button(QPushButton("Retry Save"), "danger")
+            self.retry_save_button = self._mark_button(QPushButton("Retry Save"), "danger", "retry")
             self.retry_save_button.clicked.connect(self.retry_save_queue_log)
             self.retry_save_button.setVisible(False)
             controls.addWidget(self.retry_save_button)
@@ -3108,8 +3231,12 @@ def run_qt_shell() -> int:
 
             log_title_row = QHBoxLayout()
             log_title_row.setSpacing(10)
-            self.diagnostics_log_toggle = QPushButton("▸", self.diagnostics_log_panel)
+            self.diagnostics_log_toggle = QPushButton(self.diagnostics_log_panel)
             self.diagnostics_log_toggle.setObjectName("DisclosureButton")
+            qt_icons.apply_button(
+                self.diagnostics_log_toggle, "chevron-right", "ghost", 18,
+                "Expand command preview and log", "Expand command preview and log",
+            )
             self.diagnostics_log_toggle.clicked.connect(self._toggle_diagnostics_log_panel)
             log_title_row.addWidget(self.diagnostics_log_toggle)
             title_col = QVBoxLayout()
@@ -3119,7 +3246,7 @@ def run_qt_shell() -> int:
             self.diagnostics_log_summary.setObjectName("CommandSummary")
             title_col.addWidget(self.diagnostics_log_summary)
             log_title_row.addLayout(title_col, 1)
-            copy_button = self._mark_button(QPushButton("Copy Command"))
+            copy_button = self._mark_button(QPushButton("Copy Command"), icon_name="copy")
             copy_button.clicked.connect(self.copy_command_preview)
             log_title_row.addWidget(copy_button)
             log_shell.addLayout(log_title_row)
@@ -3151,7 +3278,15 @@ def run_qt_shell() -> int:
             if self.diagnostics_log_body:
                 self.diagnostics_log_body.setVisible(self.diagnostics_log_expanded)
             if self.diagnostics_log_toggle:
-                self.diagnostics_log_toggle.setText("▾" if self.diagnostics_log_expanded else "▸")
+                expanded = self.diagnostics_log_expanded
+                qt_icons.apply_button(
+                    self.diagnostics_log_toggle,
+                    "chevron-down" if expanded else "chevron-right",
+                    "ghost",
+                    18,
+                    "Collapse command preview and log" if expanded else "Expand command preview and log",
+                    "Collapse command preview and log" if expanded else "Expand command preview and log",
+                )
             if self.diagnostics_log_summary:
                 self.diagnostics_log_summary.setText(
                     "Expanded • command preview and live render log"
@@ -3171,10 +3306,10 @@ def run_qt_shell() -> int:
             self.minimal_session_time_label = QLabel("Session total: 00:00:00")
             self.minimal_session_log_status_label = QLabel("Log: not started")
             self.minimal_session_log_status_label.setObjectName("MutedLabel")
-            self.minimal_retry_save_button = self._mark_button(QPushButton("Retry Save"), "danger")
+            self.minimal_retry_save_button = self._mark_button(QPushButton("Retry Save"), "danger", "retry")
             self.minimal_retry_save_button.clicked.connect(self.retry_save_queue_log)
             self.minimal_retry_save_button.setVisible(False)
-            minimal_open_logs_button = self._mark_button(QPushButton("Queue Logs"))
+            minimal_open_logs_button = self._mark_button(QPushButton("Queue Logs"), icon_name="logs")
             minimal_open_logs_button.clicked.connect(self.open_last_queue_log)
             layout.addWidget(self.minimal_session_time_label)
             layout.addWidget(QLabel("•"))
@@ -3271,6 +3406,20 @@ def run_qt_shell() -> int:
             if len(self.validation_results) > len(self.settings.tasks):
                 self.validation_results = self.validation_results[:len(self.settings.tasks)]
             self._prune_queue_order()
+
+        def _toggle_all_icon_name(self) -> str:
+            """Show whether Toggle All will enable or disable the current task set."""
+            toggleable = []
+            for index, task in enumerate(self.settings.tasks):
+                state = self.state[index] if index < len(self.state) else default_task_state()
+                if state.get("status", "Ready").startswith(TaskRuntimeStatus.RENDERING):
+                    continue
+                if self.runtime_queue.is_active(task):
+                    continue
+                toggleable.append(task)
+            if toggleable and all(task.enabled and id(task) in self.queue_order_by_task_id for task in toggleable):
+                return "disable"
+            return "enable"
 
         def _prune_queue_order(self) -> None:
             valid_ids = {id(task) for task in self.settings.tasks}
@@ -3385,6 +3534,8 @@ def run_qt_shell() -> int:
             self._update_inspector()
             self._update_command_preview()
             self._update_status_bar()
+            if self.toggle_all_button:
+                qt_icons.apply_button(self.toggle_all_button, self._toggle_all_icon_name())
 
         def _task_index_for_table_row(self, row: int) -> Optional[int]:
             """Resolve a visible table row to the underlying task index."""
@@ -3740,6 +3891,7 @@ def run_qt_shell() -> int:
                     if os.path.normcase(path) == os.path.normcase(self.current_queue_path or ""):
                         label = f"✓ {label}"
                     action = menu.addAction(label)
+                    qt_icons.apply_action(action, "load-queue")
                     action.setToolTip(path)
                     action.triggered.connect(lambda _checked=False, p=path: self.load_queue_path(p))
                 menu.addSeparator()
@@ -3747,12 +3899,15 @@ def run_qt_shell() -> int:
                 empty_action = menu.addAction("No recent queues")
                 empty_action.setEnabled(False)
                 menu.addSeparator()
-            menu.addAction("Open Queue File...", self.load_queue_dialog)
+            open_action = menu.addAction("Open Queue File...", self.load_queue_dialog)
+            qt_icons.apply_action(open_action, "load-queue")
             auto_load_action = menu.addAction("Auto Load Last Queue")
+            qt_icons.apply_action(auto_load_action, "settings")
             auto_load_action.setCheckable(True)
             auto_load_action.setChecked(bool(self.user_settings.get("auto_load_last_queue", False)))
             auto_load_action.toggled.connect(self._on_user_settings_changed)
-            menu.addAction("Clear Recent Queues", self.clear_recent_queues)
+            clear_action = menu.addAction("Clear Recent Queues", self.clear_recent_queues)
+            qt_icons.apply_action(clear_action, "clear")
             menu.exec(self.cursor().pos())
 
         def clear_recent_queues(self) -> None:

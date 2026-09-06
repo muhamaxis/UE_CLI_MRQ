@@ -8,7 +8,7 @@ REM Output EXE name: MRQLauncherCLI
 REM =================================================
 
 set "APP_NAME=MRQLauncherCLI"
-set "APP_VERSION=1.10.30"
+set "APP_VERSION=1.10.31"
 
 REM Resolve repository layout from this BAT location.
 set "SCRIPT_DIR=%~dp0"
@@ -17,7 +17,8 @@ for %%I in ("%SCRIPT_DIR%..") do set "PROJECT_ROOT=%%~fI"
 set "MAIN=%PROJECT_ROOT%\code\mrq_launcher.py"
 set "ICON=%PROJECT_ROOT%\resources\app_icon.ico"
 set "LOGO=%PROJECT_ROOT%\resources\mrq_launcher_logo_167.png"
-set "VENV=%PROJECT_ROOT%\.venv-build"
+set "ICONS=%PROJECT_ROOT%\resources\icons"
+set "VENV=%PROJECT_ROOT%\build\.venv-pyside68-py311"
 set "BUILD_DIR=%PROJECT_ROOT%\build\pyinstaller"
 set "SPEC_DIR=%PROJECT_ROOT%\build\spec"
 set "DIST_DIR=%PROJECT_ROOT%\dist"
@@ -45,10 +46,17 @@ if not exist "%LOGO%" (
   goto :fail
 )
 
+if not exist "%ICONS%\render.svg" (
+  echo [X] SVG icon set not found: %ICONS%
+  echo     Expected render.svg and the shared action icon catalog.
+  goto :fail
+)
+
 REM Resolve absolute paths for PyInstaller resource embedding.
 for %%I in ("%MAIN%") do set "MAIN_ABS=%%~fI"
 for %%I in ("%ICON%") do set "ICON_ABS=%%~fI"
 for %%I in ("%LOGO%") do set "LOGO_ABS=%%~fI"
+for %%I in ("%ICONS%") do set "ICONS_ABS=%%~fI"
 for %%I in ("%DIST_DIR%") do set "DIST_ABS=%%~fI"
 for %%I in ("%BUILD_DIR%") do set "BUILD_ABS=%%~fI"
 for %%I in ("%SPEC_DIR%") do set "SPEC_ABS=%%~fI"
@@ -63,6 +71,7 @@ echo [i] Project root: %PROJECT_ROOT%
 echo [i] Main script: %MAIN_ABS%
 echo [i] App icon: %ICON_ABS%
 echo [i] Header logo: %LOGO_ABS%
+echo [i] SVG icons: %ICONS_ABS%
 echo [i] Output dir: %DIST_ABS%
 echo.
 
@@ -87,7 +96,7 @@ if exist "%VENV%\Scripts\activate.bat" (
   echo [i] Using existing build venv: %VENV%
 ) else (
   echo [i] Creating build venv: %VENV%
-  python -m venv "%VENV%" || goto :fail
+  py -3.11 -m venv "%VENV%" || python -m venv "%VENV%" || goto :fail
 )
 
 call "%VENV%\Scripts\activate.bat" || goto :fail
@@ -96,7 +105,7 @@ echo [i] Upgrading pip...
 python -m pip install --upgrade pip wheel setuptools >> "%LOG%" 2>&1 || goto :fail
 
 echo [i] Installing build dependencies...
-python -m pip install "pyinstaller>=6.4" "PySide6>=6.6" >> "%LOG%" 2>&1 || goto :fail
+python -m pip install "pyinstaller>=6.4" "PySide6>=6.8,<6.9" >> "%LOG%" 2>&1 || goto :fail
 
 echo [i] Python version:
 python --version
@@ -119,7 +128,7 @@ pyinstaller ^
   --icon "%ICON_ABS%" ^
   --add-data "%ICON_ABS%;resources" ^
   --add-data "%LOGO_ABS%;resources" ^
-  --collect-all PySide6 ^
+  --add-data "%ICONS_ABS%;resources\icons" ^
   --distpath "%DIST_DIR%" ^
   --workpath "%BUILD_DIR%" ^
   --specpath "%SPEC_DIR%" ^
@@ -146,7 +155,7 @@ pyinstaller ^
   --icon "%ICON_ABS%" ^
   --add-data "%ICON_ABS%;resources" ^
   --add-data "%LOGO_ABS%;resources" ^
-  --collect-all PySide6 ^
+  --add-data "%ICONS_ABS%;resources\icons" ^
   --distpath "%DIST_DIR%" ^
   --workpath "%BUILD_DIR%" ^
   --specpath "%SPEC_DIR%" ^
@@ -187,6 +196,7 @@ echo     ^<repo^>\tools\build_exe.bat
 echo     ^<repo^>\code\mrq_launcher.py
 echo     ^<repo^>\resources\app_icon.ico
 echo     ^<repo^>\resources\mrq_launcher_logo_167.png
+echo     ^<repo^>\resources\icons\render.svg
 echo.
 pause
 exit /b 1

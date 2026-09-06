@@ -7,13 +7,13 @@ MRQ-Launcher is designed for production render workflows where opening the full 
 ## Current version
 
 ```text
-1.10.30
+1.10.31
 ```
 
 The clean repository starts from the current Qt-only production baseline. The recommended first Git tag/release is:
 
 ```text
-v1.10.30
+v1.10.31
 ```
 
 This keeps the GitHub release version aligned with the internal `APP_VERSION` shown by the application.
@@ -73,7 +73,8 @@ MRQ-Launcher/
 │  └─ mrq_launcher_project_guardrails.md
 ├─ resources/
 │  ├─ app_icon.ico
-│  └─ mrq_launcher_logo_167.png
+│  ├─ mrq_launcher_logo_167.png
+│  └─ icons/                  # Shared 24×24 SVG action icon catalog
 ├─ tools/
 │  └─ build_exe.bat
 ├─ README.md
@@ -137,6 +138,8 @@ Expected outputs:
 dist\MRQLauncherCLI\MRQLauncherCLI.exe
 dist\MRQLauncherCLI.exe
 ```
+
+Both builds embed the application icon, header logo, and the complete SVG action icon catalog. The OneFile EXE can be moved by itself, including into a path with spaces or Cyrillic characters. For OneDir, move or copy the entire `dist\MRQLauncherCLI` folder; moving only its EXE leaves required Qt runtime files behind. Neither build depends on the current working directory or loose source SVG files.
 
 Temporary build files are written to:
 
@@ -336,8 +339,8 @@ user_settings.json
 Recommended clean-repo first release:
 
 ```bat
-git tag v1.10.30
-git push origin v1.10.30
+git tag v1.10.31
+git push origin v1.10.31
 ```
 
 Future releases should follow the internal app version where practical:
@@ -345,6 +348,7 @@ Future releases should follow the internal app version where practical:
 ```text
 v1.10.29
 v1.10.30
+v1.10.31
 v1.11.0
 v2.0.0
 ```
