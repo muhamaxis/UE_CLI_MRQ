@@ -7,13 +7,13 @@ MRQ-Launcher is designed for production render workflows where opening the full 
 ## Current version
 
 ```text
-1.10.31
+1.10.32
 ```
 
 The clean repository starts from the current Qt-only production baseline. The recommended first Git tag/release is:
 
 ```text
-v1.10.31
+v1.10.32
 ```
 
 This keeps the GitHub release version aligned with the internal `APP_VERSION` shown by the application.
@@ -339,8 +339,8 @@ user_settings.json
 Recommended clean-repo first release:
 
 ```bat
-git tag v1.10.31
-git push origin v1.10.31
+git tag v1.10.32
+git push origin v1.10.32
 ```
 
 Future releases should follow the internal app version where practical:
@@ -349,6 +349,7 @@ Future releases should follow the internal app version where practical:
 v1.10.29
 v1.10.30
 v1.10.31
+v1.10.32
 v1.11.0
 v2.0.0
 ```

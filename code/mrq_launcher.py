@@ -16,25 +16,27 @@ from datetime import datetime, timedelta
 # App meta
 # -------------------------------------------------
 
-APP_VERSION = "1.10.31"
+APP_VERSION = "1.10.32"
 
 UI_THEME = {
-    "bg": "#111318",
-    "panel": "#171B22",
-    "panel_alt": "#1D232C",
-    "panel_soft": "#202733",
-    "border": "#2A3340",
-    "text": "#E7ECF3",
-    "muted": "#9CA8B7",
-    "accent": "#4EA1FF",
-    "accent_hover": "#6BB2FF",
-    "accent_soft": "#223A56",
-    "success": "#2D6A4F",
-    "warning": "#8A6A2F",
-    "danger": "#8B3A46",
+    "bg": "#0B0D12",
+    "panel": "#151820",
+    "panel_alt": "#1A1F2A",
+    "panel_soft": "#202634",
+    "panel_soft_hover": "#2A3344",
+    "entry": "#0F1218",
+    "border": "#2B3444",
+    "border_soft": "#202838",
+    "text": "#F5F7FA",
+    "muted": "#9AA6B8",
+    "quiet": "#728096",
+    "accent": "#0A84FF",
+    "accent_hover": "#2696FF",
+    "accent_soft": "#123B67",
+    "success": "#32D74B",
+    "warning": "#E07B24",
+    "danger": "#FF453A",
     "danger_hover": "#A64957",
-    "panel_soft_hover": "#2B3442",
-    "entry": "#10141A",
 }
 
 STATUS_PILL_THEME = {
@@ -249,7 +251,7 @@ class TaskValidationResult:
         if self.message:
             parts.append(self.message)
         if self.details:
-            parts.extend(self.details[:4])
+            parts.extend(self.details)
         return "\n".join(parts)
 
 
@@ -1317,13 +1319,13 @@ def build_unreal_command_preview(settings: AppSettings, task: RenderTask) -> str
 def run_qt_shell() -> int:
     """Launch the PySide6 queue workspace without replacing the Tkinter launcher."""
     try:
-        from PySide6.QtCore import QByteArray, QEvent, Qt, QTimer, QSize
+        from PySide6.QtCore import QByteArray, QEvent, QSettings, Qt, QTimer, QSize
         from PySide6.QtGui import QColor, QBrush, QIcon, QPalette, QFont, QPainter, QPen, QPixmap, QIntValidator
         from PySide6.QtSvg import QSvgRenderer
         from PySide6.QtWidgets import (
             QApplication, QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
             QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPushButton,
-            QHeaderView, QMenu, QSizePolicy, QSpinBox, QSplitter, QStatusBar, QStyle, QStyledItemDelegate, QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
+            QHeaderView, QMenu, QProgressBar, QScrollArea, QSizePolicy, QSpinBox, QSplitter, QStatusBar, QStyle, QStyledItemDelegate, QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
         )
     except ImportError as exc:
         print("PySide6 is required for the Qt shell. Install it with: pip install PySide6")
@@ -1406,22 +1408,14 @@ def run_qt_shell() -> int:
             pass
 
         apple = {
-            "bg": "#0B0D12",
-            "card": "#151820",
-            "card_alt": "#1A1F2A",
-            "control": "#202634",
-            "control_hover": "#2A3344",
-            "field": "#0F1218",
-            "border": "#2B3444",
-            "border_soft": "#202838",
-            "text": "#F5F7FA",
-            "muted": "#9AA6B8",
-            "muted2": "#728096",
-            "accent": "#0A84FF",
-            "accent_hover": "#2696FF",
-            "accent_soft": "#123B67",
-            "danger": "#FF453A",
-            "success": "#32D74B",
+            "bg": UI_THEME["bg"], "card": UI_THEME["panel"],
+            "card_alt": UI_THEME["panel_alt"], "control": UI_THEME["panel_soft"],
+            "control_hover": UI_THEME["panel_soft_hover"], "field": UI_THEME["entry"],
+            "border": UI_THEME["border"], "border_soft": UI_THEME["border_soft"],
+            "text": UI_THEME["text"], "muted": UI_THEME["muted"],
+            "muted2": UI_THEME["quiet"], "accent": UI_THEME["accent"],
+            "accent_hover": UI_THEME["accent_hover"], "accent_soft": UI_THEME["accent_soft"],
+            "danger": UI_THEME["danger"], "success": UI_THEME["success"],
         }
 
         palette = QPalette()
@@ -1464,6 +1458,17 @@ def run_qt_shell() -> int:
                 border: 1px solid {apple['border_soft']};
                 border-radius: 12px;
             }}
+            QFrame#ExecutionStrip {{
+                background-color: {apple['card_alt']};
+                border: 1px solid {apple['border_soft']};
+                border-radius: 10px;
+            }}
+            QFrame#ToolbarDivider {{
+                background-color: {apple['border']};
+                min-width: 1px;
+                max-width: 1px;
+                margin: 5px 3px;
+            }}
             QFrame#CommandSettingsBody, QFrame#DiagnosticsLogBody {{
                 background: transparent;
                 border: none;
@@ -1488,8 +1493,14 @@ def run_qt_shell() -> int:
             }}
             QLabel#TitleLabel {{
                 color: {apple['text']};
-                font-size: 22px;
+                font-size: 18px;
                 font-weight: 800;
+            }}
+            QLabel#EyebrowLabel {{
+                color: {apple['muted2']};
+                font-size: 8pt;
+                font-weight: 700;
+                letter-spacing: 1px;
             }}
             QLabel#SectionTitle {{
                 color: {apple['text']};
@@ -1501,13 +1512,32 @@ def run_qt_shell() -> int:
                 color: {apple['muted']};
                 font-size: 9pt;
             }}
-            QLabel#InspectorField {{
-                background-color: {apple['field']};
+            QLabel#InspectorLabel {{
+                color: {apple['muted2']};
+                font-size: 8pt;
+                font-weight: 700;
+                padding-top: 5px;
+            }}
+            QLabel#InspectorValue {{
                 color: {apple['text']};
-                border: 1px solid {apple['border_soft']};
-                border-radius: 10px;
-                padding: 8px 10px;
+                padding: 1px 0px 5px 0px;
                 line-height: 120%;
+            }}
+            QLabel#QueueCount, QLabel#ExecutionMetric {{
+                color: {apple['muted']};
+                font-size: 9pt;
+                font-weight: 600;
+            }}
+            QLabel#ExecutionCurrent {{
+                color: {apple['text']};
+                font-weight: 700;
+            }}
+            QLabel#EmptyState {{
+                color: {apple['muted']};
+                background-color: {apple['field']};
+                border: 1px dashed {apple['border']};
+                border-radius: 10px;
+                padding: 10px 12px;
             }}
             QPushButton {{
                 background-color: {apple['control']};
@@ -1540,6 +1570,11 @@ def run_qt_shell() -> int:
             QPushButton[role="primary"]:hover {{
                 background-color: {apple['accent_hover']};
                 border-color: {apple['accent_hover']};
+            }}
+            QPushButton[role="primary"]:disabled {{
+                background-color: #182231;
+                border-color: {apple['border_soft']};
+                color: {apple['muted2']};
             }}
             QPushButton[role="warning"] {{
                 background-color: #C76A1D;
@@ -1643,6 +1678,24 @@ def run_qt_shell() -> int:
                 background-color: {apple['accent_soft']};
                 color: #FFFFFF;
             }}
+            QProgressBar {{
+                min-width: 90px;
+                max-width: 150px;
+                min-height: 7px;
+                max-height: 7px;
+                border: none;
+                border-radius: 3px;
+                background-color: {apple['field']};
+                text-align: center;
+            }}
+            QProgressBar::chunk {{
+                border-radius: 3px;
+                background-color: {apple['accent']};
+            }}
+            QScrollArea#InspectorScroll, QScrollArea#InspectorScroll > QWidget > QWidget {{
+                background: transparent;
+                border: none;
+            }}
             QListWidget {{
                 background-color: {apple['card']};
                 color: {apple['text']};
@@ -1713,6 +1766,15 @@ def run_qt_shell() -> int:
             }}
         """)
 
+    def queue_row_background(option, index) -> QColor:
+        """Return one shared row surface for every custom table delegate."""
+        if option.state & QStyle.State_Selected:
+            return QColor(UI_THEME["accent_soft"])
+        if index.data(Qt.UserRole + 5) == "rendering":
+            return QColor("#172B47")
+        return QColor(UI_THEME["panel_alt"] if index.row() % 2 else UI_THEME["panel"])
+
+
     class QtStatusPillDelegate(QStyledItemDelegate):
         """Draw rounded status pills in the Qt queue table."""
 
@@ -1725,12 +1787,7 @@ def run_qt_shell() -> int:
             painter.save()
             painter.setRenderHint(QPainter.Antialiasing, True)
 
-            row_bg = QColor("#151820")
-            if option.state & QStyle.State_Selected:
-                row_bg = QColor("#123B67")
-            elif index.row() % 2:
-                row_bg = QColor("#1A1F2A")
-            painter.fillRect(option.rect, row_bg)
+            painter.fillRect(option.rect, queue_row_background(option, index))
 
             rect = option.rect.adjusted(10, 7, -10, -7)
             min_width = 92
@@ -1750,7 +1807,7 @@ def run_qt_shell() -> int:
 
 
     class QtOrderBadgeDelegate(QStyledItemDelegate):
-        """Draw compact orange queue order badges."""
+        """Draw quiet queue order text without competing with task state."""
 
         def paint(self, painter: QPainter, option, index) -> None:
             text = str(index.data(Qt.DisplayRole) or "").strip()
@@ -1758,45 +1815,20 @@ def run_qt_shell() -> int:
             painter.save()
             painter.setRenderHint(QPainter.Antialiasing, True)
 
-            row_bg = QColor("#151820")
-            if option.state & QStyle.State_Selected:
-                row_bg = QColor("#123B67")
-            elif index.row() % 2:
-                row_bg = QColor("#1A1F2A")
-            painter.fillRect(option.rect, row_bg)
+            painter.fillRect(option.rect, queue_row_background(option, index))
 
             if text:
-                size = max(22, min(option.rect.height() - 10, 28))
-                width = size if len(text) <= 2 else min(option.rect.width() - 14, size + (len(text) - 2) * 7)
-                x = option.rect.x() + max(7, (option.rect.width() - width) // 2)
-                y = option.rect.y() + max(5, (option.rect.height() - size) // 2)
-                rect = option.rect.__class__(x, y, width, size)
-                shadow_rect = option.rect.__class__(x, y + 2, width, size)
-
-                painter.setPen(Qt.NoPen)
-                painter.setBrush(QBrush(QColor(0, 0, 0, 70)))
-                painter.drawRoundedRect(shadow_rect, 6, 6)
-
-                painter.setPen(QPen(QColor("#FFB15A"), 1))
-                painter.setBrush(QBrush(QColor("#E8791A")))
-                painter.drawRoundedRect(rect, 6, 6)
-
-                inner = rect.adjusted(2, 2, -2, -2)
-                painter.setPen(QPen(QColor("#F08A2A"), 1))
-                painter.setBrush(QBrush(QColor("#C75F12")))
-                painter.drawRoundedRect(inner, 4, 4)
-
                 font = QFont(option.font)
                 font.setBold(True)
                 painter.setFont(font)
-                painter.setPen(QColor("#FFFFFF"))
-                painter.drawText(rect, Qt.AlignCenter, text)
+                painter.setPen(QColor("#B7C2D0"))
+                painter.drawText(option.rect.adjusted(8, 0, -8, 0), Qt.AlignCenter, text)
 
             painter.restore()
 
 
     class QtValidationDotDelegate(QStyledItemDelegate):
-        """Draw a compact color-coded validation dot."""
+        """Draw validation as color plus a readable status label."""
 
         def paint(self, painter: QPainter, option, index) -> None:
             color = index.data(Qt.UserRole + 4) or validation_status_color("Not checked")
@@ -1804,20 +1836,18 @@ def run_qt_shell() -> int:
             painter.save()
             painter.setRenderHint(QPainter.Antialiasing, True)
 
-            row_bg = QColor("#151820")
-            if option.state & QStyle.State_Selected:
-                row_bg = QColor("#123B67")
-            elif index.row() % 2:
-                row_bg = QColor("#1A1F2A")
-            painter.fillRect(option.rect, row_bg)
+            painter.fillRect(option.rect, queue_row_background(option, index))
 
-            size = max(10, min(option.rect.height() - 16, 14))
-            x = option.rect.x() + max(0, (option.rect.width() - size) // 2)
+            text = str(index.data(Qt.DisplayRole) or "Not checked")
+            size = max(8, min(option.rect.height() - 20, 10))
+            x = option.rect.x() + 10
             y = option.rect.y() + max(0, (option.rect.height() - size) // 2)
             rect = option.rect.__class__(x, y, size, size)
             painter.setPen(QPen(QColor(color), 1))
             painter.setBrush(QBrush(QColor(color)))
             painter.drawEllipse(rect)
+            painter.setPen(QColor(UI_THEME["text"] if text != "Not checked" else UI_THEME["muted"]))
+            painter.drawText(option.rect.adjusted(26, 0, -6, 0), Qt.AlignLeft | Qt.AlignVCenter, text)
             painter.restore()
 
 
@@ -2581,17 +2611,21 @@ def run_qt_shell() -> int:
             self.diagnostics_log_panel = None
             self.diagnostics_log_body = None
             self.diagnostics_log_toggle = None
+            self.diagnostics_details_button = None
             self.diagnostics_log_summary = None
             self.diagnostics_log_expanded = False
             self.command_preview = None
             self.log_view = None
             self.current_task_label = None
             self.current_status_label = None
+            self.execution_progress = None
+            self.execution_counts_label = None
             self.session_time_label = None
             self.session_log_status_label = None
             self.retry_save_button = None
             self.minimal_current_task_label = None
             self.minimal_current_status_label = None
+            self.minimal_execution_counts_label = None
             self.minimal_session_time_label = None
             self.minimal_session_log_status_label = None
             self.minimal_retry_save_button = None
@@ -2604,9 +2638,21 @@ def run_qt_shell() -> int:
             self.minimal_footer = None
             self.queue_title_label = None
             self.queue_toolbar_panel = None
+            self.queue_empty_label = None
+            self.queue_count_label = None
+            self.render_enabled_button = None
+            self.render_selected_button = None
+            self.queue_selected_button = None
+            self.stop_current_button = None
+            self.stop_all_button = None
+            self.minimal_stop_current_button = None
+            self.minimal_stop_all_button = None
             self.toggle_all_button = None
             self.minimal_mode = False
             self._normal_geometry = None
+            self._minimal_geometry = None
+            self.window_preferences = QSettings("MRQ Launcher", "MRQLauncherCLI")
+            self._closing = False
             self.queue_log_viewer = None
             self.inspector_labels = {}
             self.setWindowTitle(f"MRQ Launcher (Qt Shell) ver {APP_VERSION}")
@@ -2618,6 +2664,7 @@ def run_qt_shell() -> int:
             self.minimal_minimum_size = (560, 360)
             self.setMinimumSize(*self.full_minimum_size)
             self._build_ui()
+            self._restore_window_preferences()
             self.refresh_queue_view()
             self.event_timer = QTimer(self)
             self.event_timer.timeout.connect(self._drain_runtime_events)
@@ -2627,8 +2674,8 @@ def run_qt_shell() -> int:
         def _build_ui(self) -> None:
             root = QWidget(self)
             root_layout = QVBoxLayout(root)
-            root_layout.setContentsMargins(18, 18, 18, 18)
-            root_layout.setSpacing(14)
+            root_layout.setContentsMargins(12, 12, 12, 12)
+            root_layout.setSpacing(10)
             self.setCentralWidget(root)
             self.header_panel = self._build_header()
             root_layout.addWidget(self.header_panel)
@@ -2720,9 +2767,11 @@ def run_qt_shell() -> int:
         def _build_header(self) -> QFrame:
             panel = self._panel()
             layout = QVBoxLayout(panel)
+            layout.setContentsMargins(12, 10, 12, 10)
+            layout.setSpacing(8)
 
             header_row = QHBoxLayout()
-            header_row.setSpacing(12)
+            header_row.setSpacing(10)
             layout.addLayout(header_row)
 
             logo_path = app_header_logo_path()
@@ -2730,30 +2779,31 @@ def run_qt_shell() -> int:
                 logo_pixmap = QPixmap(logo_path)
                 if not logo_pixmap.isNull():
                     logo_label = QLabel(panel)
-                    logo_size = 134
+                    logo_size = 44
                     logo_label.setFixedSize(logo_size, logo_size)
                     logo_label.setPixmap(logo_pixmap.scaled(
                         logo_size, logo_size, Qt.KeepAspectRatio, Qt.SmoothTransformation
                     ))
                     logo_label.setAlignment(Qt.AlignCenter)
-                    header_row.addWidget(logo_label, 0, Qt.AlignLeft | Qt.AlignTop)
+                    header_row.addWidget(logo_label, 0, Qt.AlignLeft | Qt.AlignVCenter)
 
             right_column = QVBoxLayout()
-            right_column.setSpacing(10)
+            right_column.setSpacing(8)
             header_row.addLayout(right_column, 1)
 
             top_row = QHBoxLayout()
             right_column.addLayout(top_row)
 
             title_block = QVBoxLayout()
+            title_block.setSpacing(0)
             title = QLabel("MRQ Launcher CLI")
             title.setObjectName("TitleLabel")
-            subtitle = self._muted_label("Qt runtime workspace")
+            subtitle = self._muted_label(f"Render queue workspace  •  v{APP_VERSION}")
             title_block.addWidget(title)
             title_block.addWidget(subtitle)
             title_block.addStretch(1)
             top_row.addLayout(title_block, 1)
-            load_button = self._mark_button(QPushButton("Load Queue"), icon_name="load-queue")
+            load_button = self._mark_button(QPushButton("Open Queue"), icon_name="load-queue")
             load_button.clicked.connect(self.show_recent_queue_menu)
             save_button = self._mark_button(QPushButton("Save Queue"), icon_name="save-queue")
             save_button.clicked.connect(self.save_queue_dialog)
@@ -2762,14 +2812,14 @@ def run_qt_shell() -> int:
             top_row.addWidget(load_button)
             top_row.addWidget(save_button)
             top_row.addWidget(minimal_button)
-            self._build_render_options_panel(right_column)
+            self._build_render_options_panel(layout)
             return panel
 
         def _build_render_options_panel(self, parent_layout: QVBoxLayout) -> None:
             options_panel = QFrame(self)
             options_panel.setObjectName("OptionStrip")
             self.command_settings_panel = options_panel
-            options_panel.setMinimumHeight(224)
+            options_panel.setMinimumHeight(210)
             options_shell = QVBoxLayout(options_panel)
             options_shell.setContentsMargins(14, 12, 14, 14)
             options_shell.setSpacing(12)
@@ -2877,11 +2927,11 @@ def run_qt_shell() -> int:
                 self.command_settings_body.setVisible(self.command_settings_expanded)
             if self.command_settings_panel:
                 if self.command_settings_expanded:
-                    self.command_settings_panel.setMinimumHeight(224)
+                    self.command_settings_panel.setMinimumHeight(210)
                     self.command_settings_panel.setMaximumHeight(16777215)
                 else:
-                    self.command_settings_panel.setMinimumHeight(72)
-                    self.command_settings_panel.setMaximumHeight(82)
+                    self.command_settings_panel.setMinimumHeight(56)
+                    self.command_settings_panel.setMaximumHeight(64)
             if self.command_settings_toggle:
                 expanded = self.command_settings_expanded
                 qt_icons.apply_button(
@@ -3011,65 +3061,106 @@ def run_qt_shell() -> int:
         def _build_minimal_header(self) -> QFrame:
             panel = self._panel()
             layout = QHBoxLayout(panel)
+            layout.setContentsMargins(12, 10, 12, 10)
             title_block = QVBoxLayout()
             title = self._section_label("Minimal Mode")
-            subtitle = self._muted_label("Execution only view with compact columns.")
+            subtitle = self._muted_label("Live queue monitor")
             title_block.addWidget(title)
             title_block.addWidget(subtitle)
             layout.addLayout(title_block, 1)
-            stop_current = self._mark_button(QPushButton("Stop Current"), icon_name="stop-current")
-            stop_current.clicked.connect(self.cancel_current)
-            stop_all = self._mark_button(QPushButton("Stop All"), "danger", "stop-all")
-            stop_all.clicked.connect(self.cancel_all)
+            self.minimal_stop_current_button = self._mark_button(QPushButton("Stop Current"), icon_name="stop-current")
+            self.minimal_stop_current_button.clicked.connect(self.cancel_current)
+            self.minimal_stop_all_button = self._mark_button(QPushButton("Stop All"), "danger", "stop-all")
+            self.minimal_stop_all_button.clicked.connect(self.cancel_all)
             exit_button = self._mark_button(QPushButton("Exit Minimal Mode"), "primary", "mode-full")
             exit_button.clicked.connect(self.exit_minimal_mode)
-            layout.addWidget(stop_current)
-            layout.addWidget(stop_all)
+            layout.addWidget(self.minimal_stop_current_button)
+            layout.addWidget(self.minimal_stop_all_button)
             layout.addWidget(exit_button)
             return panel
+
+        def _toolbar_divider(self, parent: QWidget) -> QFrame:
+            divider = QFrame(parent)
+            divider.setObjectName("ToolbarDivider")
+            return divider
 
         def _build_queue_area(self) -> QFrame:
             panel = self._panel()
             layout = QVBoxLayout(panel)
+            layout.setContentsMargins(12, 10, 12, 12)
+            layout.setSpacing(8)
+            title_row = QHBoxLayout()
+            title_row.setSpacing(8)
             self.queue_title_label = self._section_label("Render Queue")
-            layout.addWidget(self.queue_title_label)
+            self.queue_count_label = QLabel("0 tasks")
+            self.queue_count_label.setObjectName("QueueCount")
+            title_row.addWidget(self.queue_title_label)
+            title_row.addWidget(self.queue_count_label)
+            title_row.addStretch(1)
+            filter_label = QLabel("Filter")
+            filter_label.setObjectName("InspectorLabel")
+            title_row.addWidget(filter_label)
+            self.filter_edit = QLineEdit(panel)
+            self.filter_edit.setObjectName("QueueFilter")
+            self.filter_edit.setPlaceholderText("Filter level, sequence, preset, or status")
+            self.filter_edit.setClearButtonEnabled(True)
+            self.filter_edit.setMinimumWidth(260)
+            self.filter_edit.setMaximumWidth(420)
+            self.filter_edit.textChanged.connect(self.refresh_queue_view)
+            title_row.addWidget(self.filter_edit, 1)
+            layout.addLayout(title_row)
             self.queue_toolbar_panel = QFrame(panel)
             self.queue_toolbar_panel.setObjectName("ToolbarStrip")
             toolbar = QHBoxLayout(self.queue_toolbar_panel)
-            toolbar.setContentsMargins(10, 10, 10, 10)
-            toolbar.setSpacing(8)
+            toolbar.setContentsMargins(8, 7, 8, 7)
+            toolbar.setSpacing(6)
             for text, icon_name, callback in (
                 ("Add Job", "add", self.add_task_dialog),
-                ("Load Task(s)", "load-task", self.load_task_dialog),
-                ("Save Selected", "save-task", self.save_selected_tasks_dialog),
-                ("Edit", "edit", self.edit_selected_task),
-                ("Duplicate", "duplicate", self.duplicate_selected),
-                ("Remove", "remove", self.remove_selected),
-                ("Move Up", "move-up", lambda: self.move_selected(-1)),
-                ("Move Down", "move-down", lambda: self.move_selected(1)),
-                ("Toggle All", "enable", self.toggle_all_ready_disabled),
+                ("Import", "load-task", self.load_task_dialog),
             ):
-                role = "danger" if icon_name == "remove" else "secondary"
-                button = self._mark_button(QPushButton(text), role, icon_name)
-                if text == "Toggle All":
-                    self.toggle_all_button = button
+                button = self._mark_button(QPushButton(text), "secondary", icon_name)
                 button.clicked.connect(callback)
                 toolbar.addWidget(button)
+            toolbar.addWidget(self._toolbar_divider(self.queue_toolbar_panel))
+            for text, icon_name, callback, role in (
+                ("Edit", "edit", self.edit_selected_task, "secondary"),
+                ("Duplicate", "duplicate", self.duplicate_selected, "secondary"),
+                ("Remove", "remove", self.remove_selected, "danger"),
+            ):
+                button = self._mark_button(QPushButton(text), role, icon_name)
+                button.clicked.connect(callback)
+                toolbar.addWidget(button)
+            toolbar.addWidget(self._toolbar_divider(self.queue_toolbar_panel))
+            for icon_name, tooltip, delta in (
+                ("move-up", "Move selected task up", -1),
+                ("move-down", "Move selected task down", 1),
+            ):
+                button = self._mark_button(QPushButton(""), "secondary", icon_name)
+                button.setFixedWidth(38)
+                button.setToolTip(tooltip)
+                button.setAccessibleName(tooltip)
+                button.clicked.connect(lambda _checked=False, step=delta: self.move_selected(step))
+                toolbar.addWidget(button)
             toolbar.addStretch(1)
-            toolbar.addWidget(QLabel("Filter"))
-            self.filter_edit = QLineEdit(panel)
-            self.filter_edit.setPlaceholderText("Filter tasks")
-            self.filter_edit.textChanged.connect(self.refresh_queue_view)
-            toolbar.addWidget(self.filter_edit)
+            more_button = self._mark_button(QPushButton("More"), "secondary", "settings")
+            more_button.clicked.connect(lambda: self._show_queue_more_menu(more_button))
+            toolbar.addWidget(more_button)
             layout.addWidget(self.queue_toolbar_panel)
+            self.queue_empty_label = QLabel("No jobs yet. Add a job or import task JSON to build the render queue.", panel)
+            self.queue_empty_label.setObjectName("EmptyState")
+            self.queue_empty_label.setWordWrap(True)
+            self.queue_empty_label.setAlignment(Qt.AlignCenter)
+            layout.addWidget(self.queue_empty_label)
             self.table = QTableWidget(0, len(self.COLUMNS), panel)
+            self.table.setObjectName("QueueTable")
+            self.table.setAccessibleName("Render queue")
             self.table.setHorizontalHeaderLabels(list(self.COLUMNS))
             self.table.setAlternatingRowColors(True)
             self.table.verticalHeader().setVisible(False)
             self.table.verticalHeader().setDefaultSectionSize(38)
             self.table.horizontalHeader().setStretchLastSection(False)
             self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
-            self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.Stretch)
+            self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
             self.table.setShowGrid(False)
             self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
             self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
@@ -3077,9 +3168,14 @@ def run_qt_shell() -> int:
             self.table.setItemDelegateForColumn(0, QtOrderBadgeDelegate(self.table))
             self.table.setItemDelegateForColumn(1, QtStatusPillDelegate(self.table))
             self.table.setItemDelegateForColumn(2, QtValidationDotDelegate(self.table))
-            self.table.setColumnWidth(0, 68)
+            self.table.setColumnWidth(0, 56)
             self.table.setColumnWidth(1, 116)
-            self.table.setColumnWidth(2, 74)
+            self.table.setColumnWidth(2, 112)
+            self.table.setColumnWidth(3, 150)
+            self.table.setColumnWidth(5, 150)
+            self.table.setColumnWidth(6, 104)
+            self.table.setColumnWidth(7, 88)
+            self.table.setColumnWidth(8, 88)
             self.table.setContextMenuPolicy(Qt.CustomContextMenu)
             self.table.customContextMenuRequested.connect(self._on_table_context_menu)
             self.table.itemSelectionChanged.connect(self._on_selection_changed)
@@ -3087,6 +3183,20 @@ def run_qt_shell() -> int:
             self.table.installEventFilter(self)
             layout.addWidget(self.table, 1)
             return panel
+
+        def _show_queue_more_menu(self, button: QPushButton) -> None:
+            selected_count = len(self.selected_indices())
+            menu = QMenu(button)
+            self._add_context_action(menu, "Save Selected Task(s)...", self.save_selected_tasks_dialog, selected_count > 0, "save-task")
+            self._add_context_action(
+                menu, "Toggle All Ready/Disabled", self.toggle_all_ready_disabled,
+                bool(self.settings.tasks), self._toggle_all_icon_name(),
+            )
+            self._add_context_action(menu, "Clear Selected Status", self.clear_status_selected, selected_count > 0, "clear")
+            menu.addSeparator()
+            self._add_context_action(menu, "Validate Queue", self.validate_queue_tasks, bool(self.settings.tasks), "validate")
+            self._add_context_action(menu, "Fix Project Path...", self.fix_project_path_for_queue, bool(self.settings.tasks), "settings")
+            menu.exec(button.mapToGlobal(button.rect().bottomLeft()))
 
         def _add_context_action(self, menu: QMenu, label: str, callback, enabled: bool = True, icon_name: Optional[str] = None, role: str = "secondary"):
             """Add a context-menu action with consistent enabled-state handling."""
@@ -3151,22 +3261,41 @@ def run_qt_shell() -> int:
         def _build_inspector_area(self) -> QFrame:
             panel = self._panel()
             layout = QVBoxLayout(panel)
+            layout.setContentsMargins(12, 10, 12, 12)
             layout.setSpacing(8)
             layout.addWidget(self._section_label("Job Inspector"))
-            for key, text in (
-                ("job", "Job Name: No selection"), ("enabled", "Enabled: -"),
-                ("project", "Project: -"), ("level", "Level: -"),
-                ("sequence", "Sequence: -"), ("preset", "Preset: -"),
-                ("validation", "Validation: -"),
+            scroll = QScrollArea(panel)
+            scroll.setObjectName("InspectorScroll")
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QFrame.NoFrame)
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            content = QWidget(scroll)
+            inspector_layout = QVBoxLayout(content)
+            inspector_layout.setContentsMargins(0, 0, 5, 0)
+            inspector_layout.setSpacing(0)
+            for key, caption, initial in (
+                ("job", "JOB", "No selection"),
+                ("enabled", "QUEUE STATE", "—"),
+                ("project", "PROJECT", "—"),
+                ("level", "LEVEL", "—"),
+                ("sequence", "SEQUENCE", "—"),
+                ("preset", "PRESET", "—"),
+                ("validation", "VALIDATION", "—"),
             ):
-                label = QLabel(text)
-                label.setObjectName("InspectorField")
-                label.setWordWrap(True)
-                label.setMinimumWidth(0)
-                label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
-                self.inspector_labels[key] = label
-                layout.addWidget(label)
-            layout.addStretch(1)
+                caption_label = QLabel(caption, content)
+                caption_label.setObjectName("InspectorLabel")
+                inspector_layout.addWidget(caption_label)
+                value_label = QLabel(initial, content)
+                value_label.setObjectName("InspectorValue")
+                value_label.setWordWrap(True)
+                value_label.setMinimumWidth(0)
+                value_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+                value_label.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard)
+                self.inspector_labels[key] = value_label
+                inspector_layout.addWidget(value_label)
+            inspector_layout.addStretch(1)
+            scroll.setWidget(content)
+            layout.addWidget(scroll, 1)
             validate_button = self._mark_button(QPushButton("Validate"), "primary", "validate")
             validate_button.clicked.connect(self.validate_queue_tasks)
             layout.addWidget(validate_button)
@@ -3182,46 +3311,64 @@ def run_qt_shell() -> int:
 
             controls = QHBoxLayout()
             controls.setSpacing(8)
-            for text, icon_name, callback, role in (
-                ("Render Enabled", "render", self.render_enabled, "warning"),
-                ("Render Selected", "render", self.render_selected, "warning"),
-                ("Queue Selected", "append-queue", self.queue_selected_or_enabled, "secondary"),
-                ("Clear Status", "clear", self.clear_status_selected, "secondary"),
-                ("Stop Current Render", "stop-current", self.cancel_current, "secondary"),
-            ):
-                button = self._mark_button(QPushButton(text), role, icon_name)
-                button.clicked.connect(callback)
-                controls.addWidget(button)
-            stop_all = self._mark_button(QPushButton("Stop All"), "danger", "stop-all")
-            stop_all.clicked.connect(self.cancel_all)
-            controls.addWidget(stop_all)
+            self.render_enabled_button = self._mark_button(QPushButton("Render Enabled"), "primary", "render")
+            self.render_enabled_button.clicked.connect(self.render_enabled)
+            controls.addWidget(self.render_enabled_button)
+            self.render_selected_button = self._mark_button(QPushButton("Render Selected"), "secondary", "render")
+            self.render_selected_button.clicked.connect(self.render_selected)
+            controls.addWidget(self.render_selected_button)
+            self.queue_selected_button = self._mark_button(QPushButton("Queue Selected"), "secondary", "append-queue")
+            self.queue_selected_button.clicked.connect(self.queue_selected_or_enabled)
+            controls.addWidget(self.queue_selected_button)
+            self.stop_current_button = self._mark_button(QPushButton("Stop Current"), "secondary", "stop-current")
+            self.stop_current_button.clicked.connect(self.cancel_current)
+            controls.addWidget(self.stop_current_button)
+            self.stop_all_button = self._mark_button(QPushButton("Stop All"), "danger", "stop-all")
+            self.stop_all_button.clicked.connect(self.cancel_all)
+            controls.addWidget(self.stop_all_button)
             controls.addStretch(1)
-            for text, icon_name, callback in (
-                ("Save Queue Log", "save-queue", self.save_queue_log),
-                ("Queue Logs", "logs", self.open_last_queue_log),
-            ):
-                button = self._mark_button(QPushButton(text), icon_name=icon_name)
-                button.clicked.connect(callback)
-                controls.addWidget(button)
+            save_log_button = self._mark_button(QPushButton("Save Snapshot"), icon_name="save-queue")
+            save_log_button.clicked.connect(self.save_queue_log)
+            controls.addWidget(save_log_button)
+            self.diagnostics_details_button = self._mark_button(QPushButton("Details"), icon_name="chevron-right")
+            self.diagnostics_details_button.clicked.connect(self._toggle_diagnostics_log_panel)
+            controls.addWidget(self.diagnostics_details_button)
             self.retry_save_button = self._mark_button(QPushButton("Retry Save"), "danger", "retry")
             self.retry_save_button.clicked.connect(self.retry_save_queue_log)
             self.retry_save_button.setVisible(False)
             controls.addWidget(self.retry_save_button)
             layout.addLayout(controls)
 
-            status_row = QHBoxLayout()
-            self.current_task_label = QLabel("Current task: Idle")
-            self.current_status_label = QLabel("Status: Idle")
-            self.session_time_label = QLabel("Session total: 00:00:00")
+            execution_panel = QFrame(panel)
+            execution_panel.setObjectName("ExecutionStrip")
+            status_row = QHBoxLayout(execution_panel)
+            status_row.setContentsMargins(10, 8, 10, 8)
+            status_row.setSpacing(10)
+            self.current_task_label = QLabel("Idle")
+            self.current_task_label.setObjectName("ExecutionCurrent")
+            self.current_status_label = QLabel("Ready to render")
+            self.current_status_label.setObjectName("ExecutionMetric")
+            self.execution_progress = QProgressBar(execution_panel)
+            self.execution_progress.setTextVisible(False)
+            self.execution_progress.setRange(0, 1)
+            self.execution_progress.setValue(0)
+            self.execution_counts_label = QLabel("Completed 0/0  •  Issues 0")
+            self.execution_counts_label.setObjectName("ExecutionMetric")
+            self.session_time_label = QLabel("Elapsed 00:00:00")
+            self.session_time_label.setObjectName("ExecutionMetric")
             self.session_log_status_label = QLabel("Session log: not started")
-            self.session_log_status_label.setObjectName("MutedLabel")
+            self.session_log_status_label.setObjectName("ExecutionMetric")
             self.session_log_status_label.setToolTip(preferred_logs_dir())
-            status_row.addWidget(self.current_task_label)
+            status_row.addWidget(self.current_task_label, 1)
             status_row.addWidget(self.current_status_label)
-            status_row.addStretch(1)
-            status_row.addWidget(self.session_log_status_label)
+            status_row.addWidget(self.execution_progress)
+            status_row.addWidget(self.execution_counts_label)
             status_row.addWidget(self.session_time_label)
-            layout.addLayout(status_row)
+            status_row.addWidget(self.session_log_status_label)
+            logs_button = self._mark_button(QPushButton("Logs"), icon_name="logs")
+            logs_button.clicked.connect(self.open_last_queue_log)
+            status_row.addWidget(logs_button)
+            layout.addWidget(execution_panel)
 
             self.diagnostics_log_panel = QFrame(panel)
             self.diagnostics_log_panel.setObjectName("ToolbarStrip")
@@ -3275,10 +3422,10 @@ def run_qt_shell() -> int:
             self._apply_diagnostics_log_collapsed_state()
 
         def _apply_diagnostics_log_collapsed_state(self) -> None:
+            expanded = self.diagnostics_log_expanded
             if self.diagnostics_log_body:
-                self.diagnostics_log_body.setVisible(self.diagnostics_log_expanded)
+                self.diagnostics_log_body.setVisible(expanded)
             if self.diagnostics_log_toggle:
-                expanded = self.diagnostics_log_expanded
                 qt_icons.apply_button(
                     self.diagnostics_log_toggle,
                     "chevron-down" if expanded else "chevron-right",
@@ -3287,6 +3434,12 @@ def run_qt_shell() -> int:
                     "Collapse command preview and log" if expanded else "Expand command preview and log",
                     "Collapse command preview and log" if expanded else "Expand command preview and log",
                 )
+            if self.diagnostics_details_button:
+                self.diagnostics_details_button.setText("Hide Details" if expanded else "Details")
+                qt_icons.apply_button(
+                    self.diagnostics_details_button,
+                    "chevron-down" if expanded else "chevron-right",
+                )
             if self.diagnostics_log_summary:
                 self.diagnostics_log_summary.setText(
                     "Expanded • command preview and live render log"
@@ -3294,37 +3447,84 @@ def run_qt_shell() -> int:
                     else "Collapsed • command preview and live render log"
                 )
             if self.diagnostics_log_panel:
-                self.diagnostics_log_panel.setMinimumHeight(230 if self.diagnostics_log_expanded else 66)
-                self.diagnostics_log_panel.setMaximumHeight(16777215 if self.diagnostics_log_expanded else 76)
+                self.diagnostics_log_panel.setVisible(expanded)
+                self.diagnostics_log_panel.setMinimumHeight(230 if expanded else 0)
+                self.diagnostics_log_panel.setMaximumHeight(16777215 if expanded else 0)
                 self.diagnostics_log_panel.updateGeometry()
 
         def _build_minimal_footer(self) -> QFrame:
             panel = self._panel()
             layout = QHBoxLayout(panel)
-            self.minimal_current_task_label = QLabel("Current task: Idle")
-            self.minimal_current_status_label = QLabel("Status: Idle")
-            self.minimal_session_time_label = QLabel("Session total: 00:00:00")
+            layout.setContentsMargins(12, 8, 12, 8)
+            self.minimal_current_task_label = QLabel("Idle")
+            self.minimal_current_task_label.setObjectName("ExecutionCurrent")
+            self.minimal_current_status_label = QLabel("Ready to render")
+            self.minimal_current_status_label.setObjectName("ExecutionMetric")
+            self.minimal_execution_counts_label = QLabel("0/0 complete  •  0 issues")
+            self.minimal_execution_counts_label.setObjectName("ExecutionMetric")
+            self.minimal_session_time_label = QLabel("Elapsed 00:00:00")
+            self.minimal_session_time_label.setObjectName("ExecutionMetric")
             self.minimal_session_log_status_label = QLabel("Log: not started")
-            self.minimal_session_log_status_label.setObjectName("MutedLabel")
+            self.minimal_session_log_status_label.setObjectName("ExecutionMetric")
             self.minimal_retry_save_button = self._mark_button(QPushButton("Retry Save"), "danger", "retry")
             self.minimal_retry_save_button.clicked.connect(self.retry_save_queue_log)
             self.minimal_retry_save_button.setVisible(False)
             minimal_open_logs_button = self._mark_button(QPushButton("Queue Logs"), icon_name="logs")
             minimal_open_logs_button.clicked.connect(self.open_last_queue_log)
             layout.addWidget(self.minimal_session_time_label)
-            layout.addWidget(QLabel("•"))
             layout.addWidget(self.minimal_current_task_label, 1)
             layout.addWidget(self.minimal_current_status_label)
+            layout.addWidget(self.minimal_execution_counts_label)
             layout.addWidget(self.minimal_session_log_status_label)
             layout.addWidget(self.minimal_retry_save_button)
             layout.addWidget(minimal_open_logs_button)
             return panel
+
+        def _stored_geometry(self, key: str):
+            value = self.window_preferences.value(key)
+            if isinstance(value, QByteArray):
+                return value
+            if isinstance(value, bytes):
+                return QByteArray(value)
+            return None
+
+        def _restore_window_preferences(self) -> None:
+            geometry = self._stored_geometry("window/fullGeometry")
+            if geometry:
+                self.restoreGeometry(geometry)
+                self._normal_geometry = geometry
+            sizes = self.window_preferences.value("window/fullSplitterSizes")
+            if self.main_splitter and isinstance(sizes, (list, tuple)) and len(sizes) == 2:
+                try:
+                    parsed = [max(1, int(size)) for size in sizes]
+                except (TypeError, ValueError):
+                    parsed = []
+                if parsed:
+                    self.main_splitter.setSizes(parsed)
+            header_state = self.window_preferences.value("window/queueHeaderState")
+            if isinstance(header_state, bytes):
+                header_state = QByteArray(header_state)
+            if self.table and isinstance(header_state, QByteArray):
+                self.table.horizontalHeader().restoreState(header_state)
+            self._minimal_geometry = self._stored_geometry("window/minimalGeometry")
+
+        def _save_window_preferences(self) -> None:
+            key = "window/minimalGeometry" if self.minimal_mode else "window/fullGeometry"
+            self.window_preferences.setValue(key, self.saveGeometry())
+            if self.main_splitter:
+                self.window_preferences.setValue("window/fullSplitterSizes", self.main_splitter.sizes())
+            if self.table:
+                self.window_preferences.setValue("window/queueHeaderState", self.table.horizontalHeader().saveState())
+            self.window_preferences.sync()
 
         def enter_minimal_mode(self) -> None:
             if self.minimal_mode:
                 return
             self.minimal_mode = True
             self._normal_geometry = self.saveGeometry()
+            self.window_preferences.setValue("window/fullGeometry", self._normal_geometry)
+            if self.main_splitter:
+                self.window_preferences.setValue("window/fullSplitterSizes", self.main_splitter.sizes())
             self.setMinimumSize(*self.minimal_minimum_size)
             if self.header_panel:
                 self.header_panel.setVisible(False)
@@ -3344,11 +3544,16 @@ def run_qt_shell() -> int:
                 self.statusBar().setVisible(False)
             self._set_minimal_columns(True)
             self.refresh_queue_view()
-            self._resize_minimal_window()
+            if self._minimal_geometry:
+                self.restoreGeometry(self._minimal_geometry)
+            else:
+                self._resize_minimal_window()
 
         def exit_minimal_mode(self) -> None:
             if not self.minimal_mode:
                 return
+            self._minimal_geometry = self.saveGeometry()
+            self.window_preferences.setValue("window/minimalGeometry", self._minimal_geometry)
             self.minimal_mode = False
             self.setMinimumSize(*self.full_minimum_size)
             if self.header_panel:
@@ -3501,6 +3706,8 @@ def run_qt_shell() -> int:
             if not self.table:
                 return
             selected_indices = set(self.selected_indices())
+            vertical_scroll = self.table.verticalScrollBar().value()
+            horizontal_scroll = self.table.horizontalScrollBar().value()
             visible_indices = self._visible_task_indices()
             self.table.setRowCount(len(visible_indices))
             for row, task_index in enumerate(visible_indices):
@@ -3511,7 +3718,7 @@ def run_qt_shell() -> int:
                 values = (
                     str(order) if order is not None else "",
                     get_status_display(state.get("status", "Ready"), task.enabled),
-                    "",
+                    validation.status if validation else "Not checked",
                     soft_name(task.level), soft_name(task.sequence), soft_name(task.preset),
                     format_runtime_display(state), format_state_time_display(state.get("start")),
                     format_state_time_display(state.get("end")),
@@ -3519,21 +3726,30 @@ def run_qt_shell() -> int:
                 for column, value in enumerate(values):
                     item = QTableWidgetItem(value)
                     item.setData(Qt.UserRole, task_index)
+                    item.setData(Qt.UserRole + 5, get_status_kind(state.get("status", "Ready"), task.enabled))
                     if column == 2:
                         item.setData(Qt.UserRole + 4, validation_status_color(validation.status if validation else "Not checked"))
                         item.setToolTip(validation_status_tooltip(validation))
                     self._apply_status_item_style(item, task, state, column)
                     self.table.setItem(row, column, item)
-            self.table.resizeColumnsToContents()
-            self.table.setColumnWidth(0, 68)
-            self.table.setColumnWidth(1, 116)
-            self.table.setColumnWidth(2, 74)
             for row, task_index in enumerate(visible_indices):
                 if task_index in selected_indices:
                     self.table.selectRow(row)
+            self.table.verticalScrollBar().setValue(vertical_scroll)
+            self.table.horizontalScrollBar().setValue(horizontal_scroll)
+            if self.queue_count_label:
+                visible_suffix = f"  •  {len(visible_indices)} shown" if len(visible_indices) != len(self.settings.tasks) else ""
+                self.queue_count_label.setText(f"{len(self.settings.tasks)} task{'s' if len(self.settings.tasks) != 1 else ''}{visible_suffix}")
+            if self.queue_empty_label:
+                if self.settings.tasks and not visible_indices:
+                    self.queue_empty_label.setText("No jobs match the current filter. Clear the filter to restore the queue.")
+                else:
+                    self.queue_empty_label.setText("No jobs yet. Add a job or import task JSON to build the render queue.")
+                self.queue_empty_label.setVisible(not visible_indices)
             self._update_inspector()
             self._update_command_preview()
             self._update_status_bar()
+            self._sync_action_states()
             if self.toggle_all_button:
                 qt_icons.apply_button(self.toggle_all_button, self._toggle_all_icon_name())
 
@@ -3776,25 +3992,27 @@ def run_qt_shell() -> int:
             task = self._selected_task()
             if task is None:
                 values = {
-                    "job": "Job Name: No selection", "enabled": "Enabled: -", "project": "Project: -",
-                    "level": "Level: -", "sequence": "Sequence: -", "preset": "Preset: -",
-                    "validation": "Validation: -",
+                    "job": "No selection", "enabled": "—", "project": "—",
+                    "level": "—", "sequence": "—", "preset": "—",
+                    "validation": "—",
                 }
             else:
                 idx = self._find_task_index_by_identity(task)
                 validation = self._validation_for_index(idx)
                 values = {
-                    "job": f"Job Name: {soft_name(task.sequence)}", "enabled": f"Enabled: {'Yes' if task.enabled else 'No'}",
-                    "project": f"Project: {task.uproject or '-'}",
-                    "level": f"Level: {soft_object_to_editor_path(task.level) or '-'}",
-                    "sequence": f"Sequence: {soft_object_to_editor_path(task.sequence) or '-'}",
-                    "preset": f"Preset: {soft_object_to_editor_path(task.preset) or '-'}",
-                    "validation": validation.display_text if validation else "Validation: -",
+                    "job": soft_name(task.sequence),
+                    "enabled": "Enabled and ordered" if task.enabled and self._queue_order_for_task(task) is not None else ("Enabled" if task.enabled else "Disabled"),
+                    "project": task.uproject or "—",
+                    "level": soft_object_to_editor_path(task.level) or "—",
+                    "sequence": soft_object_to_editor_path(task.sequence) or "—",
+                    "preset": soft_object_to_editor_path(task.preset) or "—",
+                    "validation": validation.display_text.replace("Validation: ", "", 1) if validation else "—",
                 }
             for key, value in values.items():
                 label = self.inspector_labels.get(key)
                 if label:
                     label.setText(value)
+                    label.setToolTip(value if value not in ("—", "No selection") else "")
 
         def _build_command_preview_for_task(self, task: RenderTask) -> str:
             try:
@@ -3817,32 +4035,74 @@ def run_qt_shell() -> int:
                 if task else "Select a task to inspect the generated command line."
             )
 
+        def _sync_action_states(self) -> None:
+            """Keep the primary and destructive actions aligned with actual queue state."""
+            selected_count = len(self.selected_indices())
+            enabled_count = sum(1 for task in self.settings.tasks if task.enabled)
+            busy = self._queue_is_busy()
+            has_active_process = self.process_controller.is_active()
+            if self.render_enabled_button:
+                self.render_enabled_button.setText(f"Render Enabled ({enabled_count})")
+                self.render_enabled_button.setEnabled(enabled_count > 0 and not busy)
+            if self.render_selected_button:
+                self.render_selected_button.setText(f"Render Selected ({selected_count})")
+                self.render_selected_button.setEnabled(selected_count > 0 and not busy)
+            if self.queue_selected_button:
+                self.queue_selected_button.setText("Append Selected" if busy else "Queue Selected")
+                self.queue_selected_button.setEnabled((selected_count > 0 or enabled_count > 0) and (busy or not self.worker_running))
+            for button in (self.stop_current_button, self.minimal_stop_current_button):
+                if button:
+                    button.setVisible(busy)
+                    button.setEnabled(has_active_process)
+            for button in (self.stop_all_button, self.minimal_stop_all_button):
+                if button:
+                    button.setVisible(busy)
+                    button.setEnabled(busy)
+
         def _update_status_bar(self) -> None:
             queued = sum(1 for state in self.state if state.get("status") == TaskRuntimeStatus.QUEUED)
             running = sum(1 for state in self.state if state.get("status", "").startswith(TaskRuntimeStatus.RENDERING))
-            failed = sum(1 for state in self.state if state.get("status", "").startswith((TaskRuntimeStatus.FAILED, TaskRuntimeStatus.CANCELLED)))
+            failed = sum(1 for state in self.state if state.get("status", "").startswith(TaskRuntimeStatus.FAILED))
+            cancelled = sum(1 for state in self.state if state.get("status", "").startswith(TaskRuntimeStatus.CANCELLED))
+            skipped = sum(1 for state in self.state if state.get("status", "").startswith(TaskRuntimeStatus.SKIPPED_POLICY))
             done = sum(1 for state in self.state if state.get("status", "").startswith(TaskRuntimeStatus.DONE))
             enabled = sum(1 for task in self.settings.tasks if task.enabled)
             ordered = len(self._ordered_task_indices())
-            self.statusBar().showMessage(f"Tasks: {len(self.settings.tasks)} | Enabled: {enabled} | Ordered: {ordered} | Queued: {queued} | Running: {running} | Done: {done} | Failed: {failed}")
+            self.statusBar().showMessage(f"Tasks: {len(self.settings.tasks)} | Enabled: {enabled} | Ordered: {ordered} | Queued: {queued} | Running: {running} | Done: {done} | Failed: {failed} | Cancelled: {cancelled}")
             current_idx = self._current_running_task_index()
-            if current_idx is None:
-                current_idx = self.selected_indices()[0] if self.selected_indices() else None
             if current_idx is not None and 0 <= current_idx < len(self.settings.tasks):
                 task = self.settings.tasks[current_idx]
                 state = self.state[current_idx]
-                current_task_text = f"Current task: {soft_name(task.sequence)}"
-                current_status_text = f"Status: {state.get('status', 'Ready')}"
+                current_task_text = f"Rendering {soft_name(task.sequence)}"
+                current_status_text = state.get("status", "Rendering")
+            elif self.settings.tasks and not self._queue_is_busy() and (done or failed or cancelled or skipped):
+                current_task_text = "Session complete"
+                current_status_text = "Review results and logs"
+            elif self.settings.tasks:
+                current_task_text = "Ready to render"
+                current_status_text = f"{enabled} enabled  •  {queued} queued"
             else:
-                current_task_text = "Current task: Idle"
-                current_status_text = "Status: Idle"
+                current_task_text = "Idle"
+                current_status_text = "Add or import jobs"
 
             self.current_task_label.setText(current_task_text)
             self.current_status_label.setText(current_status_text)
+            total = len(self.settings.tasks)
+            issue_count = failed + (1 if self._last_session_save_error else 0)
+            terminal_count = done + failed + cancelled + skipped
+            if self.execution_counts_label:
+                self.execution_counts_label.setText(f"{done}/{total} complete  •  {issue_count} issues")
+            if self.minimal_execution_counts_label:
+                self.minimal_execution_counts_label.setText(f"{done}/{total} complete  •  {issue_count} issues")
+            if self.execution_progress:
+                self.execution_progress.setRange(0, max(1, total))
+                self.execution_progress.setValue(min(total, terminal_count))
+                self.execution_progress.setToolTip(f"{terminal_count} of {total} jobs reached a terminal state")
             if self.minimal_current_task_label:
                 self.minimal_current_task_label.setText(current_task_text)
             if self.minimal_current_status_label:
                 self.minimal_current_status_label.setText(current_status_text)
+            self._sync_action_states()
 
         def _update_session_runtime(self) -> None:
             for idx, state in enumerate(self.state):
@@ -3862,7 +4122,7 @@ def run_qt_shell() -> int:
                     total += max(0, int(time.time() - state["start"]))
             h, rem = divmod(total, 3600)
             m, s = divmod(rem, 60)
-            session_text = f"Session total: {h:02d}:{m:02d}:{s:02d}"
+            session_text = f"Elapsed {h:02d}:{m:02d}:{s:02d}"
             self.session_time_label.setText(session_text)
             if self.minimal_session_time_label:
                 self.minimal_session_time_label.setText(session_text)
@@ -4925,6 +5185,10 @@ def run_qt_shell() -> int:
 
         def closeEvent(self, event) -> None:
             """Checkpoint confirmed session state before an orderly application close."""
+            self._save_window_preferences()
+            self._closing = True
+            if getattr(self, "event_timer", None):
+                self.event_timer.stop()
             journal = self._session_journals.get(self._runtime_session_id)
             if journal is None:
                 event.accept()
@@ -4940,6 +5204,9 @@ def run_qt_shell() -> int:
                     QMessageBox.Retry,
                 )
                 if reply == QMessageBox.Retry:
+                    self._closing = False
+                    if getattr(self, "event_timer", None):
+                        self.event_timer.start(100)
                     event.ignore()
                     self._apply_session_log_event(TaskRuntimeEvent(
                         event_type=TaskRuntimeEventType.SESSION_LOG_SAVE_FAILED,
